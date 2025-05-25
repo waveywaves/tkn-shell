@@ -3,6 +3,7 @@ package engine
 import (
 	"fmt"
 
+	"tkn-shell/internal/export"
 	"tkn-shell/internal/parser"
 	"tkn-shell/internal/state"
 
@@ -126,6 +127,22 @@ func ExecuteCommand(cmd *parser.Command, session *state.Session, prevResult any)
 			return session.CurrentTask, nil
 		default:
 			return nil, fmt.Errorf("unknown action '%s' for kind 'step'", cmd.Action)
+		}
+	case "export":
+		switch cmd.Action {
+		case "all":
+			yamlOutput, err := export.ExportAll(session)
+			if err != nil {
+				return nil, fmt.Errorf("failed to export all resources: %w", err)
+			}
+			if yamlOutput == "" {
+				fmt.Println("# No resources to export.")
+			} else {
+				fmt.Println(yamlOutput)
+			}
+			return yamlOutput, nil // Return the YAML string as the result
+		default:
+			return nil, fmt.Errorf("unknown action '%s' for kind 'export'", cmd.Action)
 		}
 	default:
 		return nil, fmt.Errorf("unknown command kind: %s", cmd.Kind)
