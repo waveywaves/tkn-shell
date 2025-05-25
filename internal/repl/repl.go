@@ -52,6 +52,20 @@ func executor(in string) {
 				// Error message from engine.ExecuteCommand will already have position info if it came from there.
 				// If the error is from a higher level in REPL (e.g. parsing itself), we add it.
 				fmt.Printf("Error: %v\n", execErr)
+			} else if result != nil {
+				// Handle specific result types for printing
+				switch v := result.(type) {
+				case string:
+					// This was used by export all, which already prints.
+					// If other commands return single strings meant for direct REPL output, they can be printed here.
+					// For now, assuming commands that return string (like export) print it themselves.
+				case []string:
+					for _, line := range v {
+						fmt.Println(line)
+					}
+					// Add other types as needed, e.g., *tektonv1.Task, *tektonv1.Pipeline
+					// For now, successful create/select commands print their own messages.
+				}
 			}
 			prevResult = result
 			activeWhenClause = nil // Reset WhenClause after it has been applied (or attempted)
@@ -75,6 +89,7 @@ func completer(d prompt.Document) []prompt.Suggest {
 		{Text: "pipeline", Description: "Manage pipelines"},
 		{Text: "task", Description: "Manage tasks"},
 		{Text: "step", Description: "Manage steps"},
+		{Text: "list", Description: "List resources (tasks, pipelines, stepactions)"},
 		{Text: "export", Description: "Export resources"},
 		{Text: "apply", Description: "Apply resources to Kubernetes cluster"},
 		{Text: "exit", Description: "Exit the shell"},
@@ -84,6 +99,10 @@ func completer(d prompt.Document) []prompt.Suggest {
 		{Text: "add", Description: "Add to an existing resource"},
 		{Text: "select", Description: "Select an existing resource as current context"},
 		{Text: "all", Description: "Target all applicable items (e.g., for export or apply)"},
+		// Common arguments for list
+		{Text: "tasks", Description: "Target tasks (e.g., list tasks)"},
+		{Text: "pipelines", Description: "Target pipelines (e.g., list pipelines)"},
+		{Text: "stepactions", Description: "Target stepactions (e.g., list stepactions)"},
 	}
 
 	// TODO: Add suggestions for pipeline names, task names etc. from session

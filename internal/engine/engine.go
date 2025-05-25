@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	"tkn-shell/internal/export"
@@ -329,6 +330,42 @@ func ExecuteCommand(cmdPos lexer.Position, baseCmd *parser.BaseCommand, session 
 			return nil, nil // Or some status object
 		default:
 			return nil, errorWithPosition(baseCmd.Pos, "unknown action '%s' for kind 'apply'", baseCmd.Action)
+		}
+	case "list":
+		switch baseCmd.Action {
+		case "tasks":
+			if len(baseCmd.Args) != 0 {
+				return nil, errorWithPosition(baseCmd.Pos, "list tasks expects 0 arguments, got %d", len(baseCmd.Args))
+			}
+			if len(session.Tasks) == 0 {
+				return []string{"No tasks defined."}, nil
+			}
+			names := make([]string, 0, len(session.Tasks))
+			for name := range session.Tasks {
+				names = append(names, name)
+			}
+			sort.Strings(names)
+			return names, nil
+		case "pipelines":
+			if len(baseCmd.Args) != 0 {
+				return nil, errorWithPosition(baseCmd.Pos, "list pipelines expects 0 arguments, got %d", len(baseCmd.Args))
+			}
+			if len(session.Pipelines) == 0 {
+				return []string{"No pipelines defined."}, nil
+			}
+			names := make([]string, 0, len(session.Pipelines))
+			for name := range session.Pipelines {
+				names = append(names, name)
+			}
+			sort.Strings(names)
+			return names, nil
+		case "stepactions": // As requested, stubbed for now
+			if len(baseCmd.Args) != 0 {
+				return nil, errorWithPosition(baseCmd.Pos, "list stepactions expects 0 arguments, got %d", len(baseCmd.Args))
+			}
+			return []string{"list stepactions is not implemented yet"}, nil
+		default:
+			return nil, errorWithPosition(baseCmd.Pos, "unknown action '%s' for kind 'list'. Try 'tasks', 'pipelines', or 'stepactions'.", baseCmd.Action)
 		}
 	default:
 		return nil, errorWithPosition(baseCmd.Pos, "unknown command kind: %s", baseCmd.Kind)

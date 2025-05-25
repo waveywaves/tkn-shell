@@ -311,3 +311,101 @@ func TestExecuteCommand_SelectPipeline(t *testing.T) {
 		t.Errorf("Expected error message for non-existent pipeline, got: %v", err)
 	}
 }
+
+func TestExecuteCommand_ListCommands(t *testing.T) {
+	session := state.NewSession()
+
+	// Helper to execute a command and check for []string result or error
+	executeListCmd := func(input string, expectError bool, expectedErrorMsgSubstring string) []string {
+		t.Helper()
+		pl, err := parser.ParseLine(input)
+		if err != nil {
+			t.Fatalf("ParseLine(%q) failed: %v", input, err)
+		}
+		if len(pl.Cmds) != 1 {
+			t.Fatalf("Expected 1 command from ParseLine(%q), got %d", input, len(pl.Cmds))
+		}
+		cmdWrapper := pl.Cmds[0]
+
+		result, execErr := engine.ExecuteCommand(cmdWrapper.Pos, cmdWrapper.Cmd, session, nil, nil)
+
+		if expectError {
+			if execErr == nil {
+				t.Fatalf("ExecuteCommand(%q) expected error, got nil", input)
+			}
+			if expectedErrorMsgSubstring != "" && !strings.Contains(execErr.Error(), expectedErrorMsgSubstring) {
+				t.Fatalf("ExecuteCommand(%q) error '%v' does not contain '%s'", input, execErr, expectedErrorMsgSubstring)
+			}
+			return nil
+		} else if execErr != nil {
+			t.Fatalf("ExecuteCommand(%q) unexpected error: %v", input, execErr)
+		}
+
+		strResult, ok := result.([]string)
+		if !ok {
+			t.Fatalf("ExecuteCommand(%q) expected []string result, got %T: %+v", input, result, result)
+		}
+		return strResult
+	}
+
+	// Test list tasks (empty)
+	expectedEmptyTasks := []string{"No tasks defined."}
+	actualEmptyTasks := executeListCmd("list tasks", false, "")
+	if !reflect.DeepEqual(actualEmptyTasks, expectedEmptyTasks) {
+		t.Errorf("list tasks (empty) got %v, want %v", actualEmptyTasks, expectedEmptyTasks)
+	}
+
+	// Create some tasks - use engine.ExecuteCommand directly for these setup commands
+	createCmd := func(input string) {
+		t.Helper()
+		pl, err := parser.ParseLine(input)
+		if err != nil {
+			t.Fatalf("ParseLine(%q) for create failed: %v", input, err)
+		}
+		_, execErr := engine.ExecuteCommand(pl.Cmds[0].Pos, pl.Cmds[0].Cmd, session, nil, nil)
+		if execErr != nil {
+			t.Fatalf("ExecuteCommand(%q) for create failed: %v", input, execErr)
+		}
+	}
+	createCmd("task create task-c")
+	createCmd("task create task-a")
+	createCmd("task create task-b")
+
+	// Test list tasks (populated and sorted)
+	expectedTasks := []string{"task-a", "task-b", "task-c"}
+	actualTasks := executeListCmd("list tasks", false, "")
+	if !reflect.DeepEqual(actualTasks, expectedTasks) {
+		t.Errorf("list tasks (populated) got %v, want %v", actualTasks, expectedTasks)
+	}
+
+	// Test list pipelines (empty)
+	expectedEmptyPipelines := []string{"No pipelines defined."}
+	actualEmptyPipelines := executeListCmd("list pipelines", false, "")
+	if !reflect.DeepEqual(actualEmptyPipelines, expectedEmptyPipelines) {
+		t.Errorf("list pipelines (empty) got %v, want %v", actualEmptyPipelines, expectedEmptyPipelines)
+	}
+
+	// Create some pipelines
+	createCmd("pipeline create pipeline-z")
+	createCmd("pipeline create pipeline-x")
+
+	// Test list pipelines (populated and sorted)
+	expectedPipelines := []string{"pipeline-x", "pipeline-z"}
+	actualPipelines := executeListCmd("list pipelines", false, "")
+	if !reflect.DeepEqual(actualPipelines, expectedPipelines) {
+		t.Errorf("list pipelines (populated) got %v, want %v", actualPipelines, expectedPipelines)
+	}
+
+	// Test list stepactions (stubbed)
+	expectedStepactions := []string{"list stepactions is not implemented yet"}
+	actualStepactions := executeListCmd("list stepactions", false, "")
+	if !reflect.DeepEqual(actualStepactions, expectedStepactions) {
+		t.Errorf("list stepactions got %v, want %v", actualStepactions, expectedStepactions)
+	}
+
+	// Test invalid list action
+	_ = executeListCmd("list foobar", true, "unknown action 'foobar' for kind 'list'")
+
+	// Test list tasks with arguments (should fail)
+	_ = executeListCmd("list tasks extra-arg", true, "list tasks expects 0 arguments")
+}
