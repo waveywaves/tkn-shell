@@ -16,19 +16,31 @@ import (
 
 func TestExecuteCommand_PipelineTaskStepChain(t *testing.T) {
 	inputLine := "pipeline create ci | task create build | step add compile --image alpine"
-
 	session := state.NewSession()
-
 	parsedLine, err := parser.ParseLine(inputLine)
 	if err != nil {
 		t.Fatalf("ParseLine(%q) error = %v", inputLine, err)
 	}
 
-	var prevResult any = nil
-	for _, cmd := range parsedLine.Cmds {
-		prevResult, err = engine.ExecuteCommand(cmd, session, prevResult)
-		if err != nil {
-			t.Fatalf("ExecuteCommand(%+v) error = %v", cmd, err)
+	var prevResult any
+	var activeWhenClause *parser.WhenClause
+	for _, cmdWrapper := range parsedLine.Cmds {
+		if cmdWrapper.When != nil {
+			activeWhenClause = cmdWrapper.When
+			continue
+		}
+		if cmdWrapper.Cmd != nil {
+			prevResult, err = engine.ExecuteCommand(cmdWrapper.Pos, cmdWrapper.Cmd, session, prevResult, activeWhenClause)
+			if err != nil {
+				t.Fatalf("ExecuteCommand(%+v) error = %v", cmdWrapper.Cmd, err)
+			}
+			activeWhenClause = nil // Reset after use
+		} else if activeWhenClause != nil {
+			// A WhenClause was parsed but not followed by a BaseCommand in the same pipe segment.
+			// This might be an error or just means it applies to the next segment if piping continues.
+			// For now, we assume When applies to an immediately following command in sequence.
+			t.Logf("Warning: Dangling WhenClause, no command to apply to in current segment.")
+			activeWhenClause = nil // Reset it to avoid affecting unrelated commands
 		}
 	}
 
@@ -88,25 +100,34 @@ func TestExecuteCommand_PipelineTaskStepChain(t *testing.T) {
 func TestExecuteCommand_TaskWithParamAndStepInterpolation(t *testing.T) {
 	inputCommands := []string{
 		"task create my-task",
-		"param appVersion=1.7.3", // Note: parser expects 'name=value' as a single arg for param
+		"param appVersion=1.7.3",
 		"step add print-version --image some-image `echo $(params.appVersion)`",
 	}
 
 	session := state.NewSession()
 	var prevResult interface{}
 	var err error
+	var activeWhenClause *parser.WhenClause // Though not used in this specific test data
 
 	for _, line := range inputCommands {
 		parsedLine, parseErr := parser.ParseLine(line)
 		if parseErr != nil {
 			t.Fatalf("ParseLine(%q) error = %v", line, parseErr)
 		}
-		if len(parsedLine.Cmds) != 1 {
-			t.Fatalf("Expected 1 command from parsing %q, got %d", line, len(parsedLine.Cmds))
-		}
-		prevResult, err = engine.ExecuteCommand(parsedLine.Cmds[0], session, prevResult)
-		if err != nil {
-			t.Fatalf("ExecuteCommand for line %q error = %v", line, err)
+		// Each line is a separate execution context for this test structure
+		activeWhenClause = nil // Reset for each line if it was from a multi-command line test
+		for _, cmdWrapper := range parsedLine.Cmds {
+			if cmdWrapper.When != nil {
+				activeWhenClause = cmdWrapper.When
+				continue
+			}
+			if cmdWrapper.Cmd != nil {
+				prevResult, err = engine.ExecuteCommand(cmdWrapper.Pos, cmdWrapper.Cmd, session, prevResult, activeWhenClause)
+				if err != nil {
+					t.Fatalf("ExecuteCommand for line %q, command %+v error = %v", line, cmdWrapper.Cmd, err)
+				}
+				activeWhenClause = nil // Reset after use
+			}
 		}
 	}
 

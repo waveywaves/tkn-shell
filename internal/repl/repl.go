@@ -35,19 +35,33 @@ func executor(in string) {
 	}
 
 	var prevResult interface{}
-	for _, cmd := range pipelineLine.Cmds {
-		// engine.ExecuteCommand already prints output, so we just capture errors here.
-		// The 'prevResult' is passed along, though current engine commands don't heavily use it for piping data.
-		result, execErr := engine.ExecuteCommand(cmd, sess, prevResult)
-		if execErr != nil {
-			fmt.Printf("Error executing command: %v\n", execErr)
-			// Optionally, decide if the chain should break on error
-			// return
+	var activeWhenClause *parser.WhenClause // Store the WhenClause if encountered
+
+	for _, cmdWrapper := range pipelineLine.Cmds {
+		if cmdWrapper.When != nil {
+			activeWhenClause = cmdWrapper.When
+			// A WhenClause by itself doesn't produce output or change prevResult directly
+			// It modifies the *next* BaseCommand.
+			fmt.Printf("Line %d, Col %d: When clause parsed: %d conditions. Will apply to next task.\n", cmdWrapper.Pos.Line, cmdWrapper.Pos.Column, len(activeWhenClause.Conditions))
+			continue // Continue to the next command in the pipe, which should be the BaseCommand
 		}
-		prevResult = result // Store result for potential use by a subsequent piped command
+
+		if cmdWrapper.Cmd != nil {
+			result, execErr := engine.ExecuteCommand(cmdWrapper.Pos, cmdWrapper.Cmd, sess, prevResult, activeWhenClause)
+			if execErr != nil {
+				// Error message from engine.ExecuteCommand will already have position info if it came from there.
+				// If the error is from a higher level in REPL (e.g. parsing itself), we add it.
+				fmt.Printf("Error: %v\n", execErr)
+			}
+			prevResult = result
+			activeWhenClause = nil // Reset WhenClause after it has been applied (or attempted)
+		} else {
+			// This case should ideally not be reached if parser ensures Command is either When or Cmd
+			fmt.Printf("Warning: Encountered a command wrapper that is neither a WhenClause nor a BaseCommand.\n")
+		}
 	}
 
-	// Update prefix after command execution, in case CurrentPipeline changed
+	// Update prefix after command execution
 	if sess.CurrentPipeline != nil {
 		livePrefix = fmt.Sprintf("tekton(pipeline %s)> ", sess.CurrentPipeline.Name)
 	} else {
@@ -57,7 +71,7 @@ func executor(in string) {
 
 func completer(d prompt.Document) []prompt.Suggest {
 	s := []prompt.Suggest{
-		// Keywords
+		{Text: "when", Description: "Apply a conditional to the next task"},
 		{Text: "pipeline", Description: "Manage pipelines"},
 		{Text: "task", Description: "Manage tasks"},
 		{Text: "step", Description: "Manage steps"},
