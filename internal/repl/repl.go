@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"tkn-shell/internal/engine"
+	"tkn-shell/internal/feedback"
 	"tkn-shell/internal/parser"
 	"tkn-shell/internal/state"
 
@@ -42,7 +43,7 @@ func executor(in string) {
 			activeWhenClause = cmdWrapper.When
 			// A WhenClause by itself doesn't produce output or change prevResult directly
 			// It modifies the *next* BaseCommand.
-			fmt.Printf("Line %d, Col %d: When clause parsed: %d conditions. Will apply to next task.\n", cmdWrapper.Pos.Line, cmdWrapper.Pos.Column, len(activeWhenClause.Conditions))
+			feedback.Infof("Line %d, Col %d: When clause parsed: %d conditions. Will apply to next task.", cmdWrapper.Pos.Line, cmdWrapper.Pos.Column, len(activeWhenClause.Conditions))
 			continue // Continue to the next command in the pipe, which should be the BaseCommand
 		}
 
@@ -51,29 +52,30 @@ func executor(in string) {
 			if execErr != nil {
 				// Error message from engine.ExecuteCommand will already have position info if it came from there.
 				// If the error is from a higher level in REPL (e.g. parsing itself), we add it.
-				fmt.Printf("Error: %v\n", execErr)
+				// For now, the main error display is handled here. engine.errorWithPosition creates the error string.
+				feedback.Errorf("%v", execErr)
 			} else if result != nil {
 				// Handle specific result types for printing
 				switch v := result.(type) {
 				case string:
-					// This was used by export all, which already prints.
+					// This was used by export all, which now uses feedback.Infof directly.
 					// If other commands return single strings meant for direct REPL output, they can be printed here.
-					// For now, assuming commands that return string (like export) print it themselves.
+					// For now, assuming commands that return string (like export) print it themselves or use feedback.
 				case []string:
 					for _, line := range v {
-						fmt.Println(line)
+						feedback.Infof(line)
 					}
 				case []byte:
-					fmt.Println(string(v))
+					feedback.Infof(string(v))
 					// Add other types as needed, e.g., *tektonv1.Task, *tektonv1.Pipeline
-					// For now, successful create/select commands print their own messages.
+					// For now, successful create/select commands print their own messages via feedback.Infof in engine.
 				}
 			}
 			prevResult = result
 			activeWhenClause = nil // Reset WhenClause after it has been applied (or attempted)
 		} else {
 			// This case should ideally not be reached if parser ensures Command is either When or Cmd
-			fmt.Printf("Warning: Encountered a command wrapper that is neither a WhenClause nor a BaseCommand.\n")
+			feedback.Errorf("Warning: Encountered a command wrapper that is neither a WhenClause nor a BaseCommand.")
 		}
 	}
 

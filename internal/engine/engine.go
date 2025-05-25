@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"tkn-shell/internal/export"
+	"tkn-shell/internal/feedback"
 	"tkn-shell/internal/parser"
 	"tkn-shell/internal/state"
 
@@ -63,7 +64,7 @@ func convertToTektonWhenExpressions(whenClause *parser.WhenClause) []tektonv1.Wh
 		case "!=":
 			op = operatorNotIn
 		default:
-			fmt.Printf("%s Unknown when operator '%s', skipping condition.\n",
+			feedback.Errorf("%s Unknown when operator '%s', skipping condition.",
 				errorWithPosition(cond.Pos, ""), cond.Operator)
 			continue
 		}
@@ -103,7 +104,7 @@ func ExecuteCommand(cmdPos lexer.Position, baseCmd *parser.BaseCommand, session 
 			session.Pipelines[name] = newPipeline
 			session.CurrentPipeline = newPipeline
 			session.CurrentTask = nil
-			fmt.Printf("Pipeline '%s' created and set as current.\n", name)
+			feedback.Infof("Pipeline '%s' created and set as current.", name)
 			return newPipeline, nil
 		case "select":
 			if len(baseCmd.Args) != 1 {
@@ -116,7 +117,7 @@ func ExecuteCommand(cmdPos lexer.Position, baseCmd *parser.BaseCommand, session 
 			}
 			session.CurrentPipeline = p
 			session.CurrentTask = nil // Reset current task when a new pipeline is selected
-			fmt.Printf("Pipeline '%s' selected as current. Current task cleared.\n", name)
+			feedback.Infof("Pipeline '%s' selected as current. Current task cleared.", name)
 			return p, nil
 		default:
 			return nil, errorWithPosition(baseCmd.Pos, "unknown action '%s' for kind 'pipeline'", baseCmd.Action)
@@ -139,7 +140,7 @@ func ExecuteCommand(cmdPos lexer.Position, baseCmd *parser.BaseCommand, session 
 			}
 			session.Tasks[name] = newTask
 			session.CurrentTask = newTask
-			fmt.Printf("Task '%s' created and set as current.\n", name)
+			feedback.Infof("Task '%s' created and set as current.", name)
 
 			if session.CurrentPipeline != nil {
 				// Check if task already exists in pipeline, if so, maybe update its WhenExpressions?
@@ -160,7 +161,7 @@ func ExecuteCommand(cmdPos lexer.Position, baseCmd *parser.BaseCommand, session 
 					// Task already in pipeline, update its WhenExpressions
 					session.CurrentPipeline.Spec.Tasks[ptIndex].When = tektonWhens
 					if len(tektonWhens) > 0 {
-						fmt.Printf("When conditions updated for task '%s' in pipeline '%s'.\n", name, session.CurrentPipeline.Name)
+						feedback.Infof("When conditions updated for task '%s' in pipeline '%s'.", name, session.CurrentPipeline.Name)
 					} else {
 						// If whenClause is nil/empty, ensure When is nil (clearing previous conditions)
 						session.CurrentPipeline.Spec.Tasks[ptIndex].When = nil
@@ -175,11 +176,10 @@ func ExecuteCommand(cmdPos lexer.Position, baseCmd *parser.BaseCommand, session 
 						When: tektonWhens,
 					}
 					session.CurrentPipeline.Spec.Tasks = append(session.CurrentPipeline.Spec.Tasks, pipelineTask)
-					fmt.Printf("Task '%s' added to pipeline '%s'", name, session.CurrentPipeline.Name)
 					if len(tektonWhens) > 0 {
-						fmt.Printf(" with when conditions.\n")
+						feedback.Infof("Task '%s' added to pipeline '%s' with when conditions.", name, session.CurrentPipeline.Name)
 					} else {
-						fmt.Printf(".\n")
+						feedback.Infof("Task '%s' added to pipeline '%s'.", name, session.CurrentPipeline.Name)
 					}
 				}
 			}
@@ -197,7 +197,7 @@ func ExecuteCommand(cmdPos lexer.Position, baseCmd *parser.BaseCommand, session 
 			// Optionally, if a task is selected, we might want to ensure CurrentPipeline is the one it belongs to,
 			// if we start associating tasks with pipelines more directly in the session state beyond Pipeline.Spec.Tasks.
 			// For now, just selecting the task is fine.
-			fmt.Printf("Task '%s' selected as current.\n", name)
+			feedback.Infof("Task '%s' selected as current.", name)
 			return t, nil
 		default:
 			return nil, errorWithPosition(baseCmd.Pos, "unknown action '%s' for kind 'task'", baseCmd.Action)
@@ -238,7 +238,7 @@ func ExecuteCommand(cmdPos lexer.Position, baseCmd *parser.BaseCommand, session 
 			}
 			session.CurrentTask.Spec.Params = append(session.CurrentTask.Spec.Params, newParamSpec)
 		}
-		fmt.Printf("Param '%s' set to '%s' for task '%s'.\\n", paramName, paramValue, session.CurrentTask.Name)
+		feedback.Infof("Param '%s' set to '%s' for task '%s'.", paramName, paramValue, session.CurrentTask.Name)
 		return session.CurrentTask, nil
 	case "step":
 		switch baseCmd.Action {
@@ -288,9 +288,9 @@ func ExecuteCommand(cmdPos lexer.Position, baseCmd *parser.BaseCommand, session 
 				Script: scriptContent,
 			}
 			session.CurrentTask.Spec.Steps = append(session.CurrentTask.Spec.Steps, newStep)
-			fmt.Printf("Step '%s' with image '%s' added to task '%s'.\\n", stepName, imageName, session.CurrentTask.Name)
+			feedback.Infof("Step '%s' with image '%s' added to task '%s'.", stepName, imageName, session.CurrentTask.Name)
 			if scriptContent != "" {
-				fmt.Printf("Step '%s' script:\n%s\\n", stepName, scriptContent)
+				feedback.Infof("Step '%s' script:\n%s", stepName, scriptContent)
 			}
 			return session.CurrentTask, nil
 		default:
@@ -304,9 +304,9 @@ func ExecuteCommand(cmdPos lexer.Position, baseCmd *parser.BaseCommand, session 
 				return nil, errorWithPosition(baseCmd.Pos, "failed to export all resources: %w", err)
 			}
 			if yamlOutput == "" {
-				fmt.Println("# No resources to export.")
+				feedback.Infof("# No resources to export.")
 			} else {
-				fmt.Println(yamlOutput)
+				feedback.Infof(yamlOutput) // ExportAll already formats as YAML string
 			}
 			return yamlOutput, nil
 		default:
@@ -322,13 +322,13 @@ func ExecuteCommand(cmdPos lexer.Position, baseCmd *parser.BaseCommand, session 
 			if ns == "" {
 				return nil, errorWithPosition(baseCmd.Pos, "namespace cannot be empty for apply all")
 			}
-			fmt.Printf("Applying all resources to namespace '%s'...\n", ns)
+			feedback.Infof("Applying all resources to namespace '%s'...", ns)
 			// Use context.Background() for now, can be made configurable if needed
 			err := session.ApplyAll(context.Background(), ns)
 			if err != nil {
 				return nil, errorWithPosition(baseCmd.Pos, "failed to apply resources: %w", err)
 			}
-			fmt.Println("All resources applied successfully.")
+			feedback.Infof("All resources applied successfully.")
 			return nil, nil // Or some status object
 		default:
 			return nil, errorWithPosition(baseCmd.Pos, "unknown action '%s' for kind 'apply'", baseCmd.Action)
