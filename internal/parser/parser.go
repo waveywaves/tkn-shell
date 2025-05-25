@@ -7,9 +7,12 @@ import (
 
 // Command represents a single command in the pipeline.
 type Command struct {
-	Kind   string   `@Ident`
-	Action string   `(@Ident)?`
-	Args   []string `(@QuotedString | @Flag | @Ident | @RawString)*`
+	Kind   string `@Ident`
+	Action string `(@Ident)?`
+	// Args can be identifiers, quoted strings, flags, or assignments.
+	// A RawString at the end of the command is captured by the Script field.
+	Args   []string `(@(Assignment (Value | QuotedString | Ident)) | @QuotedString | @Flag | @Ident)*`
+	Script string   `(@RawString)?` // Optional script content, typically for steps
 }
 
 // PipelineLine represents a line of piped commands.
@@ -19,10 +22,14 @@ type PipelineLine struct {
 
 var (
 	lex = lexer.MustSimple([]lexer.SimpleRule{
-		{Name: "Ident", Pattern: `[a-zA-Z_][a-zA-Z0-9_-]*`},
+		// Order is critical: More specific tokens first.
+		{Name: "Assignment", Pattern: `[a-zA-Z_][a-zA-Z0-9_-]*=`}, // Matches 'name='
 		{Name: "Flag", Pattern: `--[a-zA-Z0-9_-]+`},
-		{Name: "QuotedString", Pattern: `"[^"]*"`},
+		{Name: "QuotedString", Pattern: `"[^\"]*\"`},
 		{Name: "RawString", Pattern: "`[^`]*`"},
+		{Name: "Ident", Pattern: `[a-zA-Z_][a-zA-Z0-9_-]*`}, // Must come before generic Value
+		// Value should be fairly broad for RHS of assignments, but not capture whitespace or pipe.
+		{Name: "Value", Pattern: `[^\s\|=]+`},
 		{Name: "Punct", Pattern: `\|`},
 		{Name: "Whitespace", Pattern: `\s+`},
 	})
