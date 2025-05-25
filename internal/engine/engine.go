@@ -132,11 +132,11 @@ func ExecuteCommand(cmdPos lexer.Position, baseCmd *parser.BaseCommand, session 
 			name := baseCmd.Args[0]
 			p, exists := session.Pipelines[name]
 			if !exists {
-				return nil, errorWithPosition(baseCmd.Pos, "pipeline '%s' not found", name)
+				return nil, errorWithPosition(baseCmd.Pos, "pipeline %s not found", name)
 			}
 			session.CurrentPipeline = p
-			session.CurrentTask = nil // Reset current task when a new pipeline is selected
-			feedback.Infof("Pipeline '%s' selected as current. Current task cleared.", name)
+			session.CurrentTask = nil // Clear task context when pipeline changes
+			feedback.Infof("Pipeline '%s' selected as current.", name)
 			return p, nil
 		default:
 			return nil, errorWithPosition(baseCmd.Pos, "unknown action '%s' for kind 'pipeline'", baseCmd.Action)
@@ -385,41 +385,34 @@ func ExecuteCommand(cmdPos lexer.Position, baseCmd *parser.BaseCommand, session 
 			return nil, errorWithPosition(baseCmd.Pos, "unknown action '%s' for kind 'step'", baseCmd.Action)
 		}
 	case "export":
-		switch baseCmd.Action {
-		case "all":
-			yamlOutput, err := export.ExportAll(session)
+		if baseCmd.Action == "all" {
+			if err := ValidateSession(session); err != nil {
+				return nil, errorWithPosition(cmdPos, "validation failed before export: %v", err)
+			}
+			yamlData, err := export.ExportAll(session)
 			if err != nil {
-				return nil, errorWithPosition(baseCmd.Pos, "failed to export all resources: %w", err)
+				return nil, errorWithPosition(cmdPos, "failed to export: %v", err)
 			}
-			if yamlOutput == "" {
-				feedback.Infof("# No resources to export.")
-			} else {
-				feedback.Infof(yamlOutput)
-			}
-			return yamlOutput, nil // Export is read-only, no undo
-		default:
-			return nil, errorWithPosition(baseCmd.Pos, "unknown action '%s' for kind 'export'", baseCmd.Action)
+			return yamlData, nil
 		}
-	case "apply": // Apply is not easily undoable in this context, as it affects external state.
-		switch baseCmd.Action {
-		case "all":
+		return nil, errorWithPosition(baseCmd.Pos, "unknown action '%s' for export. Try 'export all'", baseCmd.Action)
+	case "apply":
+		if baseCmd.Action == "all" {
 			if len(baseCmd.Args) != 1 {
 				return nil, errorWithPosition(baseCmd.Pos, "apply all expects 1 argument (namespace), got %d", len(baseCmd.Args))
 			}
-			ns := baseCmd.Args[0]
-			if ns == "" {
-				return nil, errorWithPosition(baseCmd.Pos, "namespace cannot be empty for apply all")
+			if err := ValidateSession(session); err != nil {
+				return nil, errorWithPosition(cmdPos, "validation failed before apply: %v", err)
 			}
-			feedback.Infof("Applying all resources to namespace '%s'...", ns)
-			err := session.ApplyAll(context.Background(), ns)
+			namespace := baseCmd.Args[0]
+			err := session.ApplyAll(context.Background(), namespace)
 			if err != nil {
-				return nil, errorWithPosition(baseCmd.Pos, "failed to apply resources: %w", err)
+				return nil, errorWithPosition(cmdPos, "failed to apply: %v", err)
 			}
-			feedback.Infof("All resources applied successfully.")
+			feedback.Infof("All resources applied to namespace '%s'.", namespace) // ApplyAll prints per-resource status
 			return nil, nil
-		default:
-			return nil, errorWithPosition(baseCmd.Pos, "unknown action '%s' for kind 'apply'", baseCmd.Action)
 		}
+		return nil, errorWithPosition(baseCmd.Pos, "unknown action '%s' for apply. Try 'apply all <namespace>'", baseCmd.Action)
 	case "list": // List is read-only
 		switch baseCmd.Action {
 		case "tasks":
@@ -496,31 +489,44 @@ func ExecuteCommand(cmdPos lexer.Position, baseCmd *parser.BaseCommand, session 
 			return nil, errorWithPosition(baseCmd.Pos, "unknown action '%s' for kind 'show'. Try 'task <name>' or 'pipeline <name>'.", baseCmd.Action)
 		}
 	case "undo":
-		if len(baseCmd.Args) != 0 {
-			return nil, errorWithPosition(baseCmd.Pos, "undo command expects no arguments")
+		if len(baseCmd.Args) > 0 || baseCmd.Action != "" {
+			return nil, errorWithPosition(baseCmd.Pos, "undo command does not take arguments or actions")
 		}
-		if baseCmd.Action != "" {
-			return nil, errorWithPosition(baseCmd.Pos, "undo command does not take an action")
-		}
-		revertAction := session.PopRevertAction()
-		if revertAction != nil {
-			revertAction(session) // Execute the revert function
-			// feedback.Infof("Last action undone.") // Revert functions should provide their own specific feedback
+		revertFunc := session.PopRevertAction()
+		if revertFunc != nil {
+			revertFunc(session)
+			// feedback.Infof("Last action undone.") // Feedback is now in the RevertFunc
 		} else {
-			feedback.Infof("Nothing to undo.")
+			feedback.Infof("No actions to undo.")
 		}
 		return nil, nil
 	case "reset":
-		if len(baseCmd.Args) != 0 {
-			return nil, errorWithPosition(baseCmd.Pos, "reset command expects no arguments")
-		}
-		if baseCmd.Action != "" {
-			return nil, errorWithPosition(baseCmd.Pos, "reset command does not take an action")
+		if len(baseCmd.Args) > 0 || baseCmd.Action != "" {
+			return nil, errorWithPosition(baseCmd.Pos, "reset command does not take arguments or actions")
 		}
 		session.Reset()
-		feedback.Infof("Session reset.")
+		feedback.Infof("Session reset. All pipelines, tasks, and undo history cleared.")
+		return nil, nil
+	case "validate":
+		if len(baseCmd.Args) > 0 || baseCmd.Action != "" {
+			return nil, errorWithPosition(baseCmd.Pos, "validate command does not take arguments or actions")
+		}
+		err := ValidateSession(session)
+		if err != nil {
+			return nil, errorWithPosition(cmdPos, "validation failed: %v", err)
+		}
+		feedback.Infof("✅ no issues")
 		return nil, nil
 	default:
-		return nil, errorWithPosition(baseCmd.Pos, "unknown command kind: %s", baseCmd.Kind)
+		return nil, errorWithPosition(baseCmd.Pos, "unknown command kind '%s'", baseCmd.Kind)
 	}
+}
+
+func getStepByName(task *tektonv1.Task, stepName string) (tektonv1.Step, int, bool) {
+	for i, step := range task.Spec.Steps {
+		if step.Name == stepName {
+			return step, i, true
+		}
+	}
+	return tektonv1.Step{}, -1, false
 }

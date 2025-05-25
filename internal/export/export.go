@@ -1,8 +1,6 @@
 package export
 
 import (
-	"strings"
-
 	"tkn-shell/internal/state"
 
 	tektonv1 "github.com/tektoncd/pipeline/pkg/apis/pipeline/v1" // Added for SchemeGroupVersion
@@ -11,8 +9,8 @@ import (
 
 // ExportAll marshals all tasks and pipelines in the session to a single YAML string,
 // with documents separated by "---".
-func ExportAll(s *state.Session) (string, error) {
-	var yamlDocs []string
+func ExportAll(s *state.Session) ([]byte, error) {
+	var yamlDocs [][]byte // Changed from []string
 
 	// Export Tasks
 	for _, task := range s.Tasks {
@@ -22,9 +20,9 @@ func ExportAll(s *state.Session) (string, error) {
 
 		taskYAML, err := yaml.Marshal(taskToExport)
 		if err != nil {
-			return "", err // Consider wrapping error for more context
+			return nil, err // Consider wrapping error for more context
 		}
-		yamlDocs = append(yamlDocs, string(taskYAML))
+		yamlDocs = append(yamlDocs, taskYAML) // No conversion to string
 	}
 
 	// Export Pipelines
@@ -35,14 +33,23 @@ func ExportAll(s *state.Session) (string, error) {
 
 		pipelineYAML, err := yaml.Marshal(pipelineToExport)
 		if err != nil {
-			return "", err // Consider wrapping error for more context
+			return nil, err // Consider wrapping error for more context
 		}
-		yamlDocs = append(yamlDocs, string(pipelineYAML))
+		yamlDocs = append(yamlDocs, pipelineYAML) // No conversion to string
 	}
 
 	if len(yamlDocs) == 0 {
-		return "", nil // Or a message like "# No resources to export"
+		return nil, nil // Or a message like []byte("# No resources to export")
 	}
 
-	return strings.Join(yamlDocs, "\n---\n"), nil
+	// Join byte slices with "---" separator
+	separator := []byte("\\n---\\n")
+	var result []byte
+	for i, doc := range yamlDocs {
+		if i > 0 {
+			result = append(result, separator...)
+		}
+		result = append(result, doc...)
+	}
+	return result, nil
 }

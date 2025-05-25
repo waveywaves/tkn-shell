@@ -90,6 +90,7 @@ func printHelp() {
 	feedback.Infof("    show       - Show YAML for a resource (task <name>, pipeline <name>)")
 	feedback.Infof("    export     - Export all defined resources to YAML (all)")
 	feedback.Infof("    apply      - Apply all defined resources to Kubernetes (all <namespace>)")
+	feedback.Infof("    validate   - Validate the current session state.")
 	feedback.Infof("    undo       - Revert the last modification (pipeline/task create, step add, param set).")
 	feedback.Infof("    reset      - Clear the current session state and undo history.")
 	feedback.Infof("")
@@ -117,6 +118,7 @@ func completer(d prompt.Document) []prompt.Suggest {
 		{Text: "show", Description: "Show details of a resource (task, pipeline)"},
 		{Text: "export", Description: "Export resources"},
 		{Text: "apply", Description: "Apply resources to Kubernetes cluster"},
+		{Text: "validate", Description: "Validate the current session state"},
 		{Text: "undo", Description: "Revert the last action"},
 		{Text: "reset", Description: "Reset the current session"},
 		{Text: "exit", Description: "Exit the shell"},

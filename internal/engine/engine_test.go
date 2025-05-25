@@ -9,6 +9,7 @@ import (
 	"tkn-shell/internal/parser"
 	"tkn-shell/internal/state"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/yaml"
 
 	tektonv1 "github.com/tektoncd/pipeline/pkg/apis/pipeline/v1"
@@ -307,7 +308,7 @@ func TestExecuteCommand_SelectPipeline(t *testing.T) {
 	_, err = engine.ExecuteCommand(parsedBadSelect.Cmds[0].Pos, parsedBadSelect.Cmds[0].Cmd, session, nil, nil)
 	if err == nil {
 		t.Errorf("Expected error when selecting non-existent pipeline, got nil")
-	} else if !strings.Contains(err.Error(), "pipeline 'nonexist-pipeline' not found") {
+	} else if !strings.Contains(err.Error(), "pipeline nonexist-pipeline not found") {
 		t.Errorf("Expected error message for non-existent pipeline, got: %v", err)
 	}
 }
@@ -647,5 +648,107 @@ func TestExecuteCommand_UndoResetCommands(t *testing.T) {
 	}
 	if len(session.PastActions) != 0 {
 		t.Error("PastActions not cleared after reset")
+	}
+}
+
+func TestExecuteCommand_Validate(t *testing.T) {
+	session := state.NewSession()
+	parsedLine, _ := parser.ParseLine("validate")
+
+	// Initial validation: should pass
+	_, err := engine.ExecuteCommand(parsedLine.Cmds[0].Pos, parsedLine.Cmds[0].Cmd, session, nil, nil)
+	if err != nil {
+		t.Errorf("Expected initial 'validate' to pass, got %v", err)
+	}
+
+	// Create an invalid pipeline (e.g., empty spec, though Validate might not catch this specific case without tasks)
+	// For a more robust test, create a pipeline that violates a specific Tekton validation rule.
+	// Here, we'll create a pipeline and a task, but the task is not added to the pipeline, which isn't invalid per se.
+	// Let's instead create a task with an invalid name (e.g. with special characters not allowed by k8s naming conventions)
+	// However, our parser might reject this first. Tekton's Validate() is more about structural and cross-field consistency.
+
+	// Create a valid pipeline and task for now.
+	ptLine, _ := parser.ParseLine("pipeline create my-p | task create my-t")
+	var prevRes interface{}
+	for _, cmdWrapper := range ptLine.Cmds {
+		prevRes, err = engine.ExecuteCommand(cmdWrapper.Pos, cmdWrapper.Cmd, session, prevRes, nil)
+		if err != nil {
+			t.Fatalf("Setup command failed: %v", err)
+		}
+	}
+
+	// A pipeline with no tasks is valid. A task with no steps is also valid by default.
+	// To make it invalid, we could add a task with a name that is too long, or with invalid characters.
+	// The base `Task.Validate` checks metadata names using `validate.ObjectMetadata`.
+	invalidTaskName := strings.Repeat("a", 254) // Exceeds k8s name length limit
+	session.Tasks[invalidTaskName] = &tektonv1.Task{
+		ObjectMeta: metav1.ObjectMeta{Name: invalidTaskName},
+		Spec:       tektonv1.TaskSpec{Steps: []tektonv1.Step{{Name: "s1", Image: "img"}}},
+	}
+
+	_, err = engine.ExecuteCommand(parsedLine.Cmds[0].Pos, parsedLine.Cmds[0].Cmd, session, nil, nil)
+	if err == nil {
+		t.Errorf("Expected 'validate' to fail with invalid task name, but it passed")
+	} else {
+		if !strings.Contains(err.Error(), "metadata.name") && !strings.Contains(err.Error(), "long") {
+			t.Errorf("Expected validation error to mention metadata name length, got: %v", err)
+		}
+		t.Logf("Got expected validation error: %v", err) // Log error for visibility
+	}
+	delete(session.Tasks, invalidTaskName) // cleanup
+
+	// Test validation is called before export all
+	exportCmd, _ := parser.ParseLine("export all")
+	session.Tasks[invalidTaskName] = &tektonv1.Task{
+		ObjectMeta: metav1.ObjectMeta{Name: invalidTaskName},
+		Spec:       tektonv1.TaskSpec{Steps: []tektonv1.Step{{Name: "s1", Image: "img"}}},
+	}
+	_, err = engine.ExecuteCommand(exportCmd.Cmds[0].Pos, exportCmd.Cmds[0].Cmd, session, nil, nil)
+	if err == nil {
+		t.Errorf("Expected 'export all' to fail validation, but it passed")
+	} else if !strings.Contains(err.Error(), "validation failed before export") {
+		t.Errorf("Expected error message for 'export all' to indicate pre-export validation failure, got: %v", err)
+	}
+	delete(session.Tasks, invalidTaskName) // cleanup
+
+	// Test validation is called before apply all
+	applyCmd, _ := parser.ParseLine("apply all ns")
+	session.Tasks[invalidTaskName] = &tektonv1.Task{
+		ObjectMeta: metav1.ObjectMeta{Name: invalidTaskName},
+		Spec:       tektonv1.TaskSpec{Steps: []tektonv1.Step{{Name: "s1", Image: "img"}}},
+	}
+	_, err = engine.ExecuteCommand(applyCmd.Cmds[0].Pos, applyCmd.Cmds[0].Cmd, session, nil, nil)
+	if err == nil {
+		t.Errorf("Expected 'apply all' to fail validation, but it passed")
+	} else if !strings.Contains(err.Error(), "validation failed before apply") {
+		t.Errorf("Expected error message for 'apply all' to indicate pre-apply validation failure, got: %v", err)
+	}
+	delete(session.Tasks, invalidTaskName) // cleanup
+}
+
+func TestExecuteCommand_ExportAll_Successful(t *testing.T) {
+	session := state.NewSession()
+	p := &tektonv1.Pipeline{ObjectMeta: metav1.ObjectMeta{Name: "p1"}, Spec: tektonv1.PipelineSpec{Description: "d1"}}
+	session.Pipelines["p1"] = p
+
+	exportCmdLine, _ := parser.ParseLine("export all")
+	cmd := exportCmdLine.Cmds[0].Cmd
+
+	result, err := engine.ExecuteCommand(exportCmdLine.Cmds[0].Pos, cmd, session, nil, nil)
+	if err != nil {
+		t.Fatalf("ExecuteCommand('export all') failed: %v", err)
+	}
+
+	yamlBytes, ok := result.([]byte)
+	if !ok {
+		t.Fatalf("ExecuteCommand('export all') expected []byte result, got %T", result)
+	}
+
+	yamlString := string(yamlBytes)
+	if !strings.Contains(yamlString, "name: p1") {
+		t.Errorf("Expected YAML to contain 'name: p1', got: %s", yamlString)
+	}
+	if !strings.Contains(yamlString, "description: d1") {
+		t.Errorf("Expected YAML to contain 'description: d1', got: %s", yamlString)
 	}
 }
