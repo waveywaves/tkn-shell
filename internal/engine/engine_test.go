@@ -193,3 +193,121 @@ func TestExecuteCommand_TaskWithParamAndStepInterpolation(t *testing.T) {
 		t.Errorf("YAML output does not contain interpolated script 'echo 1.7.3'. YAML:\n%s", yamlString)
 	}
 }
+
+func TestExecuteCommand_SelectTask(t *testing.T) {
+	session := state.NewSession()
+
+	// Create task1
+	inputTask1 := "task create task1"
+	pl1, _ := parser.ParseLine(inputTask1)
+	_, err := engine.ExecuteCommand(pl1.Cmds[0].Pos, pl1.Cmds[0].Cmd, session, nil, nil)
+	if err != nil {
+		t.Fatalf("Error creating task1: %v", err)
+	}
+	if session.CurrentTask == nil || session.CurrentTask.Name != "task1" {
+		t.Fatalf("Expected CurrentTask to be 'task1' after creation, got %v", session.CurrentTask)
+	}
+
+	// Create task2
+	inputTask2 := "task create task2"
+	pl2, _ := parser.ParseLine(inputTask2)
+	_, err = engine.ExecuteCommand(pl2.Cmds[0].Pos, pl2.Cmds[0].Cmd, session, nil, nil)
+	if err != nil {
+		t.Fatalf("Error creating task2: %v", err)
+	}
+	if session.CurrentTask == nil || session.CurrentTask.Name != "task2" {
+		t.Fatalf("Expected CurrentTask to be 'task2' after creation, got %v", session.CurrentTask)
+	}
+
+	// Select task1
+	inputSelectTask1 := "task select task1"
+	plSelect1, _ := parser.ParseLine(inputSelectTask1)
+	selectedObj, err := engine.ExecuteCommand(plSelect1.Cmds[0].Pos, plSelect1.Cmds[0].Cmd, session, nil, nil)
+	if err != nil {
+		t.Fatalf("Error selecting task1: %v", err)
+	}
+
+	if session.CurrentTask == nil || session.CurrentTask.Name != "task1" {
+		t.Errorf("Expected CurrentTask to be 'task1' after selection, got %v", session.CurrentTask)
+	}
+	selectedTask, ok := selectedObj.(*tektonv1.Task)
+	if !ok || selectedTask.Name != "task1" {
+		t.Errorf("ExecuteCommand for select task did not return the selected task. Got: %+v", selectedObj)
+	}
+
+	// Try to select a non-existent task
+	inputBadSelect := "task select nonexist-task"
+	plBadSelect, _ := parser.ParseLine(inputBadSelect)
+	_, err = engine.ExecuteCommand(plBadSelect.Cmds[0].Pos, plBadSelect.Cmds[0].Cmd, session, nil, nil)
+	if err == nil {
+		t.Errorf("Expected error when selecting non-existent task, got nil")
+	} else if !strings.Contains(err.Error(), "task 'nonexist-task' not found") {
+		t.Errorf("Expected error message for non-existent task, got: %v", err)
+	}
+}
+
+func TestExecuteCommand_SelectPipeline(t *testing.T) {
+	session := state.NewSession()
+
+	// Create pipeline1 and a task to set CurrentTask initially
+	inputP1 := "pipeline create p1"
+	parsedP1, _ := parser.ParseLine(inputP1)
+	_, err := engine.ExecuteCommand(parsedP1.Cmds[0].Pos, parsedP1.Cmds[0].Cmd, session, nil, nil)
+	if err != nil {
+		t.Fatalf("Error creating p1: %v", err)
+	}
+
+	inputT1 := "task create t1"
+	parsedT1, _ := parser.ParseLine(inputT1)
+	_, err = engine.ExecuteCommand(parsedT1.Cmds[0].Pos, parsedT1.Cmds[0].Cmd, session, nil, nil) // CurrentTask is now t1, CurrentPipeline is p1
+	if err != nil {
+		t.Fatalf("Error creating t1: %v", err)
+	}
+
+	// Create pipeline2
+	inputP2 := "pipeline create p2"
+	parsedP2, _ := parser.ParseLine(inputP2)
+	_, err = engine.ExecuteCommand(parsedP2.Cmds[0].Pos, parsedP2.Cmds[0].Cmd, session, nil, nil) // CurrentPipeline is now p2, CurrentTask is nil
+	if err != nil {
+		t.Fatalf("Error creating p2: %v", err)
+	}
+	if session.CurrentPipeline == nil || session.CurrentPipeline.Name != "p2" {
+		t.Fatalf("Expected CurrentPipeline to be 'p2' after creation, got %v", session.CurrentPipeline)
+	}
+	if session.CurrentTask != nil {
+		t.Fatalf("Expected CurrentTask to be nil after creating p2, got %v", session.CurrentTask)
+	}
+
+	// Set CurrentTask to t1 again (it should still exist) and CurrentPipeline to p1
+	session.CurrentTask = session.Tasks["t1"]
+	session.CurrentPipeline = session.Pipelines["p1"]
+
+	// Select pipeline p2
+	inputSelectP2 := "pipeline select p2"
+	parsedSelectP2, _ := parser.ParseLine(inputSelectP2)
+	selectedObj, err := engine.ExecuteCommand(parsedSelectP2.Cmds[0].Pos, parsedSelectP2.Cmds[0].Cmd, session, nil, nil)
+	if err != nil {
+		t.Fatalf("Error selecting p2: %v", err)
+	}
+
+	if session.CurrentPipeline == nil || session.CurrentPipeline.Name != "p2" {
+		t.Errorf("Expected CurrentPipeline to be 'p2' after selection, got %v", session.CurrentPipeline)
+	}
+	if session.CurrentTask != nil {
+		t.Errorf("Expected CurrentTask to be nil after selecting pipeline p2, got %v", session.CurrentTask)
+	}
+	selectedPipeline, ok := selectedObj.(*tektonv1.Pipeline)
+	if !ok || selectedPipeline.Name != "p2" {
+		t.Errorf("ExecuteCommand for select pipeline did not return the selected pipeline. Got: %+v", selectedObj)
+	}
+
+	// Try to select a non-existent pipeline
+	inputBadSelect := "pipeline select nonexist-pipeline"
+	parsedBadSelect, _ := parser.ParseLine(inputBadSelect)
+	_, err = engine.ExecuteCommand(parsedBadSelect.Cmds[0].Pos, parsedBadSelect.Cmds[0].Cmd, session, nil, nil)
+	if err == nil {
+		t.Errorf("Expected error when selecting non-existent pipeline, got nil")
+	} else if !strings.Contains(err.Error(), "pipeline 'nonexist-pipeline' not found") {
+		t.Errorf("Expected error message for non-existent pipeline, got: %v", err)
+	}
+}

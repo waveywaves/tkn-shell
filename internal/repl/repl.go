@@ -82,7 +82,8 @@ func completer(d prompt.Document) []prompt.Suggest {
 		// Actions (could be context-dependent)
 		{Text: "create", Description: "Create a new resource"},
 		{Text: "add", Description: "Add to an existing resource"},
-		{Text: "all", Description: "Target all applicable items (e.g., for export)"},
+		{Text: "select", Description: "Select an existing resource as current context"},
+		{Text: "all", Description: "Target all applicable items (e.g., for export or apply)"},
 	}
 
 	// TODO: Add suggestions for pipeline names, task names etc. from session

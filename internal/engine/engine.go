@@ -102,6 +102,19 @@ func ExecuteCommand(cmdPos lexer.Position, baseCmd *parser.BaseCommand, session 
 			session.CurrentTask = nil
 			fmt.Printf("Pipeline '%s' created and set as current.\n", name)
 			return newPipeline, nil
+		case "select":
+			if len(baseCmd.Args) != 1 {
+				return nil, errorWithPosition(baseCmd.Pos, "pipeline select expects 1 argument (name), got %d", len(baseCmd.Args))
+			}
+			name := baseCmd.Args[0]
+			p, exists := session.Pipelines[name]
+			if !exists {
+				return nil, errorWithPosition(baseCmd.Pos, "pipeline '%s' not found", name)
+			}
+			session.CurrentPipeline = p
+			session.CurrentTask = nil // Reset current task when a new pipeline is selected
+			fmt.Printf("Pipeline '%s' selected as current. Current task cleared.\n", name)
+			return p, nil
 		default:
 			return nil, errorWithPosition(baseCmd.Pos, "unknown action '%s' for kind 'pipeline'", baseCmd.Action)
 		}
@@ -168,6 +181,21 @@ func ExecuteCommand(cmdPos lexer.Position, baseCmd *parser.BaseCommand, session 
 				}
 			}
 			return newTask, nil
+		case "select":
+			if len(baseCmd.Args) != 1 {
+				return nil, errorWithPosition(baseCmd.Pos, "task select expects 1 argument (name), got %d", len(baseCmd.Args))
+			}
+			name := baseCmd.Args[0]
+			t, exists := session.Tasks[name]
+			if !exists {
+				return nil, errorWithPosition(baseCmd.Pos, "task '%s' not found", name)
+			}
+			session.CurrentTask = t
+			// Optionally, if a task is selected, we might want to ensure CurrentPipeline is the one it belongs to,
+			// if we start associating tasks with pipelines more directly in the session state beyond Pipeline.Spec.Tasks.
+			// For now, just selecting the task is fine.
+			fmt.Printf("Task '%s' selected as current.\n", name)
+			return t, nil
 		default:
 			return nil, errorWithPosition(baseCmd.Pos, "unknown action '%s' for kind 'task'", baseCmd.Action)
 		}
