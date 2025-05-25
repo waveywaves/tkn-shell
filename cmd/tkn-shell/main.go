@@ -1,5 +1,9 @@
 package main
 
+import (
+	"tkn-shell/internal/repl"
+)
+
 func main() {
-	// TODO: Start the REPL
+	repl.Run()
 }
