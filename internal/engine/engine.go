@@ -10,6 +10,8 @@ import (
 	"tkn-shell/internal/parser"
 	"tkn-shell/internal/state"
 
+	"sigs.k8s.io/yaml"
+
 	"github.com/alecthomas/participle/v2/lexer"
 	tektonv1 "github.com/tektoncd/pipeline/pkg/apis/pipeline/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -366,6 +368,45 @@ func ExecuteCommand(cmdPos lexer.Position, baseCmd *parser.BaseCommand, session 
 			return []string{"list stepactions is not implemented yet"}, nil
 		default:
 			return nil, errorWithPosition(baseCmd.Pos, "unknown action '%s' for kind 'list'. Try 'tasks', 'pipelines', or 'stepactions'.", baseCmd.Action)
+		}
+	case "show":
+		switch baseCmd.Action {
+		case "task":
+			if len(baseCmd.Args) != 1 {
+				return nil, errorWithPosition(baseCmd.Pos, "show task expects 1 argument (name), got %d", len(baseCmd.Args))
+			}
+			name := baseCmd.Args[0]
+			task, exists := session.Tasks[name]
+			if !exists {
+				return nil, errorWithPosition(baseCmd.Pos, "task '%s' not found", name)
+			}
+			taskToShow := task.DeepCopy()
+			taskToShow.APIVersion = tektonv1.SchemeGroupVersion.String()
+			taskToShow.Kind = "Task"
+			yamlBytes, err := yaml.Marshal(taskToShow)
+			if err != nil {
+				return nil, errorWithPosition(baseCmd.Pos, "failed to marshal task '%s' to YAML: %w", name, err)
+			}
+			return yamlBytes, nil
+		case "pipeline":
+			if len(baseCmd.Args) != 1 {
+				return nil, errorWithPosition(baseCmd.Pos, "show pipeline expects 1 argument (name), got %d", len(baseCmd.Args))
+			}
+			name := baseCmd.Args[0]
+			pipeline, exists := session.Pipelines[name]
+			if !exists {
+				return nil, errorWithPosition(baseCmd.Pos, "pipeline '%s' not found", name)
+			}
+			pipelineToShow := pipeline.DeepCopy()
+			pipelineToShow.APIVersion = tektonv1.SchemeGroupVersion.String()
+			pipelineToShow.Kind = "Pipeline"
+			yamlBytes, err := yaml.Marshal(pipelineToShow)
+			if err != nil {
+				return nil, errorWithPosition(baseCmd.Pos, "failed to marshal pipeline '%s' to YAML: %w", name, err)
+			}
+			return yamlBytes, nil
+		default:
+			return nil, errorWithPosition(baseCmd.Pos, "unknown action '%s' for kind 'show'. Try 'task <name>' or 'pipeline <name>'.", baseCmd.Action)
 		}
 	default:
 		return nil, errorWithPosition(baseCmd.Pos, "unknown command kind: %s", baseCmd.Kind)

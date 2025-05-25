@@ -409,3 +409,107 @@ func TestExecuteCommand_ListCommands(t *testing.T) {
 	// Test list tasks with arguments (should fail)
 	_ = executeListCmd("list tasks extra-arg", true, "list tasks expects 0 arguments")
 }
+
+func TestExecuteCommand_ShowCommands(t *testing.T) {
+	session := state.NewSession()
+
+	// Helper to execute a command (create or show)
+	executeShowCmd := func(input string, expectError bool, expectedErrorMsgSubstring string) []byte {
+		t.Helper()
+		pl, err := parser.ParseLine(input)
+		if err != nil {
+			t.Fatalf("ParseLine(%q) failed: %v", input, err)
+		}
+		if len(pl.Cmds) != 1 {
+			t.Fatalf("Expected 1 command from ParseLine(%q), got %d", input, len(pl.Cmds))
+		}
+		cmdWrapper := pl.Cmds[0]
+
+		result, execErr := engine.ExecuteCommand(cmdWrapper.Pos, cmdWrapper.Cmd, session, nil, nil)
+
+		if expectError {
+			if execErr == nil {
+				t.Fatalf("ExecuteCommand(%q) expected error, got nil", input)
+			}
+			if expectedErrorMsgSubstring != "" && !strings.Contains(execErr.Error(), expectedErrorMsgSubstring) {
+				t.Fatalf("ExecuteCommand(%q) error '%v' does not contain '%s'", input, execErr, expectedErrorMsgSubstring)
+			}
+			return nil
+		} else if execErr != nil {
+			t.Fatalf("ExecuteCommand(%q) unexpected error: %v", input, execErr)
+		}
+
+		// For create commands, result might not be []byte, so allow nil return if not expecting error
+		if result == nil {
+			return nil
+		}
+
+		byteResult, ok := result.([]byte)
+		if !ok {
+			// If it's not []byte, it might be a create command returning the object (e.g., *tektonv1.Task)
+			// In this specific helper, for create commands, we don't need to return the object itself, just succeed.
+			// The actual 'show' commands are the ones where we care about the []byte output.
+			if cmdWrapper.Cmd.Kind == "task" && cmdWrapper.Cmd.Action == "create" {
+				return nil // Successful create, but no YAML output from this command itself
+			}
+			if cmdWrapper.Cmd.Kind == "pipeline" && cmdWrapper.Cmd.Action == "create" {
+				return nil // Successful create
+			}
+			t.Fatalf("ExecuteCommand(%q) expected []byte result for show, got %T: %+v", input, result, result)
+		}
+		return byteResult
+	}
+
+	// Create a task
+	executeShowCmd("task create build-task", false, "")
+
+	// Show the task
+	yamlOutput := executeShowCmd("show task build-task", false, "")
+	if len(yamlOutput) == 0 {
+		t.Fatal("show task build-task returned empty YAML")
+	}
+	yamlString := string(yamlOutput)
+
+	if !strings.Contains(yamlString, "kind: Task") {
+		t.Errorf("show task output missing 'kind: Task'. Got:\n%s", yamlString)
+	}
+	if !strings.Contains(yamlString, "name: build-task") {
+		t.Errorf("show task output missing 'name: build-task'. Got:\n%s", yamlString)
+	}
+	if !strings.Contains(yamlString, "apiVersion: tekton.dev/v1") { // or v1beta1 if that's what SchemeGroupVersion produces
+		t.Errorf("show task output missing correct apiVersion. Got:\n%s", yamlString)
+	}
+
+	// Show non-existent task
+	_ = executeShowCmd("show task non-existent-task", true, "task 'non-existent-task' not found")
+
+	// Create a pipeline
+	executeShowCmd("pipeline create build-pipeline", false, "")
+
+	// Show the pipeline
+	yamlOutputPipeline := executeShowCmd("show pipeline build-pipeline", false, "")
+	if len(yamlOutputPipeline) == 0 {
+		t.Fatal("show pipeline build-pipeline returned empty YAML")
+	}
+	yamlStringPipeline := string(yamlOutputPipeline)
+
+	if !strings.Contains(yamlStringPipeline, "kind: Pipeline") {
+		t.Errorf("show pipeline output missing 'kind: Pipeline'. Got:\n%s", yamlStringPipeline)
+	}
+	if !strings.Contains(yamlStringPipeline, "name: build-pipeline") {
+		t.Errorf("show pipeline output missing 'name: build-pipeline'. Got:\n%s", yamlStringPipeline)
+	}
+	if !strings.Contains(yamlStringPipeline, "apiVersion: tekton.dev/v1") {
+		t.Errorf("show pipeline output missing correct apiVersion. Got:\n%s", yamlStringPipeline)
+	}
+
+	// Show non-existent pipeline
+	_ = executeShowCmd("show pipeline non-existent-pipeline", true, "pipeline 'non-existent-pipeline' not found")
+
+	// Test invalid show action
+	_ = executeShowCmd("show foobar some-name", true, "unknown action 'foobar' for kind 'show'")
+
+	// Test show task with wrong number of args
+	_ = executeShowCmd("show task", true, "show task expects 1 argument")
+	_ = executeShowCmd("show task task1 task2", true, "show task expects 1 argument")
+}

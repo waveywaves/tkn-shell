@@ -63,6 +63,8 @@ func executor(in string) {
 					for _, line := range v {
 						fmt.Println(line)
 					}
+				case []byte:
+					fmt.Println(string(v))
 					// Add other types as needed, e.g., *tektonv1.Task, *tektonv1.Pipeline
 					// For now, successful create/select commands print their own messages.
 				}
@@ -90,6 +92,7 @@ func completer(d prompt.Document) []prompt.Suggest {
 		{Text: "task", Description: "Manage tasks"},
 		{Text: "step", Description: "Manage steps"},
 		{Text: "list", Description: "List resources (tasks, pipelines, stepactions)"},
+		{Text: "show", Description: "Show details of a resource (task, pipeline)"},
 		{Text: "export", Description: "Export resources"},
 		{Text: "apply", Description: "Apply resources to Kubernetes cluster"},
 		{Text: "exit", Description: "Exit the shell"},
