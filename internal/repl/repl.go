@@ -36,7 +36,7 @@ func executor(in string) {
 
 	pipelineLine, err := parser.ParseLine(in)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error parsing command: %v\n", err)
+		feedback.Errorf("Parsing command: %v", err)
 		return
 	}
 
