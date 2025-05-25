@@ -23,15 +23,20 @@ func executor(in string) {
 	if in == "" {
 		return
 	}
-	if strings.ToLower(in) == "exit" {
-		fmt.Println("Bye!")
+	if strings.ToLower(in) == "exit" || strings.ToLower(in) == "quit" {
+		feedback.Infof("Bye!")
 		os.Exit(0)
+		return
+	}
+
+	if strings.ToLower(in) == "help" {
+		printHelp()
 		return
 	}
 
 	pipelineLine, err := parser.ParseLine(in)
 	if err != nil {
-		fmt.Printf("Error parsing command: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error parsing command: %v\n", err)
 		return
 	}
 
@@ -41,45 +46,31 @@ func executor(in string) {
 	for _, cmdWrapper := range pipelineLine.Cmds {
 		if cmdWrapper.When != nil {
 			activeWhenClause = cmdWrapper.When
-			// A WhenClause by itself doesn't produce output or change prevResult directly
-			// It modifies the *next* BaseCommand.
 			feedback.Infof("Line %d, Col %d: When clause parsed: %d conditions. Will apply to next task.", cmdWrapper.Pos.Line, cmdWrapper.Pos.Column, len(activeWhenClause.Conditions))
-			continue // Continue to the next command in the pipe, which should be the BaseCommand
+			continue
 		}
 
 		if cmdWrapper.Cmd != nil {
 			result, execErr := engine.ExecuteCommand(cmdWrapper.Pos, cmdWrapper.Cmd, sess, prevResult, activeWhenClause)
 			if execErr != nil {
-				// Error message from engine.ExecuteCommand will already have position info if it came from there.
-				// If the error is from a higher level in REPL (e.g. parsing itself), we add it.
-				// For now, the main error display is handled here. engine.errorWithPosition creates the error string.
 				feedback.Errorf("%v", execErr)
 			} else if result != nil {
-				// Handle specific result types for printing
 				switch v := result.(type) {
-				case string:
-					// This was used by export all, which now uses feedback.Infof directly.
-					// If other commands return single strings meant for direct REPL output, they can be printed here.
-					// For now, assuming commands that return string (like export) print it themselves or use feedback.
 				case []string:
 					for _, line := range v {
 						feedback.Infof(line)
 					}
 				case []byte:
 					feedback.Infof(string(v))
-					// Add other types as needed, e.g., *tektonv1.Task, *tektonv1.Pipeline
-					// For now, successful create/select commands print their own messages via feedback.Infof in engine.
 				}
 			}
 			prevResult = result
-			activeWhenClause = nil // Reset WhenClause after it has been applied (or attempted)
+			activeWhenClause = nil
 		} else {
-			// This case should ideally not be reached if parser ensures Command is either When or Cmd
 			feedback.Errorf("Warning: Encountered a command wrapper that is neither a WhenClause nor a BaseCommand.")
 		}
 	}
 
-	// Update prefix after command execution
 	if sess.CurrentPipeline != nil {
 		livePrefix = fmt.Sprintf("tekton(pipeline %s)> ", sess.CurrentPipeline.Name)
 	} else {
@@ -87,8 +78,37 @@ func executor(in string) {
 	}
 }
 
+func printHelp() {
+	feedback.Infof("tkn-shell Help:")
+	feedback.Infof("  Core Commands (Keywords):")
+	feedback.Infof("    pipeline   - Manage pipelines (create, select)")
+	feedback.Infof("    task       - Manage tasks (create, select)")
+	feedback.Infof("    step       - Add steps to tasks (add --image <img_name> [script])")
+	feedback.Infof("    param      - Set parameters for tasks (name=value)")
+	feedback.Infof("    when       - Define conditional execution (e.g., when input == \"val\" | task create ...)")
+	feedback.Infof("    list       - List resources (tasks, pipelines, stepactions)")
+	feedback.Infof("    show       - Show YAML for a resource (task <name>, pipeline <name>)")
+	feedback.Infof("    export     - Export all defined resources to YAML (all)")
+	feedback.Infof("    apply      - Apply all defined resources to Kubernetes (all <namespace>)")
+	feedback.Infof("    undo       - (Not yet implemented) Revert the last operation.")
+	feedback.Infof("    reset      - (Not yet implemented) Clear the current session state.")
+	feedback.Infof("")
+	feedback.Infof("  Syntax Tips:")
+	feedback.Infof("    - Chain commands using '|' (e.g., pipeline create foo | task create bar)")
+	feedback.Infof("    - Arguments are space-separated.")
+	feedback.Infof("    - Use `backticks` for multi-line scripts in 'step add'. Script content is `echo hello`.")
+	feedback.Infof("    - Use \"double quotes\" or 'single quotes' for arguments with spaces (usually for values).")
+	feedback.Infof("")
+	feedback.Infof("  Exiting:")
+	feedback.Infof("    help       - Show this help message.")
+	feedback.Infof("    exit       - Quit the shell.")
+	feedback.Infof("    quit       - Quit the shell.")
+	feedback.Infof("")
+}
+
 func completer(d prompt.Document) []prompt.Suggest {
 	s := []prompt.Suggest{
+		{Text: "help", Description: "Show help information"},
 		{Text: "when", Description: "Apply a conditional to the next task"},
 		{Text: "pipeline", Description: "Manage pipelines"},
 		{Text: "task", Description: "Manage tasks"},
@@ -98,6 +118,7 @@ func completer(d prompt.Document) []prompt.Suggest {
 		{Text: "export", Description: "Export resources"},
 		{Text: "apply", Description: "Apply resources to Kubernetes cluster"},
 		{Text: "exit", Description: "Exit the shell"},
+		{Text: "quit", Description: "Exit the shell"},
 
 		// Actions (could be context-dependent)
 		{Text: "create", Description: "Create a new resource"},
@@ -110,24 +131,18 @@ func completer(d prompt.Document) []prompt.Suggest {
 		{Text: "stepactions", Description: "Target stepactions (e.g., list stepactions)"},
 	}
 
-	// TODO: Add suggestions for pipeline names, task names etc. from session
-	// TODO: Add suggestions for flags like --image based on context
-
 	return prompt.FilterHasPrefix(s, d.GetWordBeforeCursor(), true)
 }
 
 // Run starts the interactive REPL.
 func Run() {
-	sess = state.NewSession() // Initialize a new session for the REPL
-
+	sess = state.NewSession()
 	p := prompt.New(
 		executor,
 		completer,
 		prompt.OptionTitle("tkn-shell"),
-		prompt.OptionPrefix(livePrefix), // Initial prefix
-		prompt.OptionLivePrefix(func() (string, bool) { // Dynamic prefix
-			return livePrefix, true
-		}),
+		prompt.OptionPrefix(livePrefix),
+		prompt.OptionLivePrefix(func() (string, bool) { return livePrefix, true }),
 		prompt.OptionSuggestionBGColor(prompt.DarkGray),
 		prompt.OptionSuggestionTextColor(prompt.White),
 		prompt.OptionDescriptionBGColor(prompt.DarkGray),
@@ -136,8 +151,8 @@ func Run() {
 		prompt.OptionSelectedSuggestionTextColor(prompt.Black),
 		prompt.OptionSelectedDescriptionBGColor(prompt.LightGray),
 		prompt.OptionSelectedDescriptionTextColor(prompt.Black),
-		prompt.OptionMaxSuggestion(10),
+		prompt.OptionMaxSuggestion(15),
 	)
-	fmt.Println("Welcome to tkn-shell. Type 'exit' to quit.")
+	feedback.Infof("Welcome to tkn-shell. Type 'help' for assistance or 'exit'/'quit' to quit.")
 	p.Run()
 }
