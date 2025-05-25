@@ -29,9 +29,9 @@ type BaseCommand struct {
 	Pos    lexer.Position // Populated by Participle
 	Kind   string         `@Ident`
 	Action string         `(@Ident)?`
-	// Args can be identifiers, quoted strings, flags, or assignments.
+	// Args can be identifiers, quoted strings, flags, assignments, or general values.
 	// A RawString at the end of the command is captured by the Script field.
-	Args   []string `(@(Assignment (Value | QuotedString | Ident)) | @QuotedString | @Flag | @Ident)*`
+	Args   []string `(@(Assignment (Value | QuotedString | Ident)) | @Value | @QuotedString | @Flag | @Ident)*`
 	Script string   `(@RawString)?` // Optional script content, typically for steps
 }
 
@@ -58,11 +58,13 @@ var (
 		// Order is critical: More specific tokens first.
 		{Name: "Keywords", Pattern: `when`},
 		{Name: "Operators", Pattern: `==|!=`},
-		{Name: "Assignment", Pattern: `[a-zA-Z_][a-zA-Z0-9_-]*=`},
+		{Name: "Assignment", Pattern: `[a-zA-Z_][a-zA-Z0-9_-]*=`}, // e.g. name=
 		{Name: "Flag", Pattern: `--[a-zA-Z0-9_-]+`},
-		{Name: "QuotedString", Pattern: `"[^\"]*\"`},
+		{Name: "QuotedString", Pattern: `"[^\"]*"`},
 		{Name: "RawString", Pattern: "`[^`]*`"},
 		{Name: "Ident", Pattern: `[a-zA-Z_][a-zA-Z0-9_-]*`},
+		// Value should be less specific than Ident, Flag, Assignment, etc.
+		// It captures things like image names with repo/path, or unquoted param values.
 		{Name: "Value", Pattern: `[^\s\|=]+`},
 		{Name: "Punct", Pattern: `\|`},
 		{Name: "Whitespace", Pattern: `\s+`},
@@ -76,6 +78,6 @@ var (
 )
 
 // ParseLine parses a single line of input into a PipelineLine AST.
-func ParseLine(input string) (*PipelineLine, error) {
-	return parser.ParseString("", input)
+func ParseLine(line string) (*PipelineLine, error) {
+	return parser.ParseString("", line)
 }
