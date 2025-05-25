@@ -76,6 +76,7 @@ func completer(d prompt.Document) []prompt.Suggest {
 		{Text: "task", Description: "Manage tasks"},
 		{Text: "step", Description: "Manage steps"},
 		{Text: "export", Description: "Export resources"},
+		{Text: "apply", Description: "Apply resources to Kubernetes cluster"},
 		{Text: "exit", Description: "Exit the shell"},
 
 		// Actions (could be context-dependent)

@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -279,6 +280,27 @@ func ExecuteCommand(cmdPos lexer.Position, baseCmd *parser.BaseCommand, session 
 			return yamlOutput, nil
 		default:
 			return nil, errorWithPosition(baseCmd.Pos, "unknown action '%s' for kind 'export'", baseCmd.Action)
+		}
+	case "apply":
+		switch baseCmd.Action {
+		case "all":
+			if len(baseCmd.Args) != 1 {
+				return nil, errorWithPosition(baseCmd.Pos, "apply all expects 1 argument (namespace), got %d", len(baseCmd.Args))
+			}
+			ns := baseCmd.Args[0]
+			if ns == "" {
+				return nil, errorWithPosition(baseCmd.Pos, "namespace cannot be empty for apply all")
+			}
+			fmt.Printf("Applying all resources to namespace '%s'...\n", ns)
+			// Use context.Background() for now, can be made configurable if needed
+			err := session.ApplyAll(context.Background(), ns)
+			if err != nil {
+				return nil, errorWithPosition(baseCmd.Pos, "failed to apply resources: %w", err)
+			}
+			fmt.Println("All resources applied successfully.")
+			return nil, nil // Or some status object
+		default:
+			return nil, errorWithPosition(baseCmd.Pos, "unknown action '%s' for kind 'apply'", baseCmd.Action)
 		}
 	default:
 		return nil, errorWithPosition(baseCmd.Pos, "unknown command kind: %s", baseCmd.Kind)

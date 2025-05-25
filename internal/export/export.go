@@ -5,6 +5,7 @@ import (
 
 	"tkn-shell/internal/state"
 
+	tektonv1 "github.com/tektoncd/pipeline/pkg/apis/pipeline/v1" // Added for SchemeGroupVersion
 	"sigs.k8s.io/yaml"
 )
 
@@ -15,7 +16,11 @@ func ExportAll(s *state.Session) (string, error) {
 
 	// Export Tasks
 	for _, task := range s.Tasks {
-		taskYAML, err := yaml.Marshal(task)
+		taskToExport := task.DeepCopy() // Work with a copy
+		taskToExport.APIVersion = tektonv1.SchemeGroupVersion.String()
+		taskToExport.Kind = "Task"
+
+		taskYAML, err := yaml.Marshal(taskToExport)
 		if err != nil {
 			return "", err // Consider wrapping error for more context
 		}
@@ -24,7 +29,11 @@ func ExportAll(s *state.Session) (string, error) {
 
 	// Export Pipelines
 	for _, pipeline := range s.Pipelines {
-		pipelineYAML, err := yaml.Marshal(pipeline)
+		pipelineToExport := pipeline.DeepCopy() // Work with a copy
+		pipelineToExport.APIVersion = tektonv1.SchemeGroupVersion.String()
+		pipelineToExport.Kind = "Pipeline"
+
+		pipelineYAML, err := yaml.Marshal(pipelineToExport)
 		if err != nil {
 			return "", err // Consider wrapping error for more context
 		}
