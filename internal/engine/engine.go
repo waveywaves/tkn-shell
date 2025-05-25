@@ -102,8 +102,27 @@ func ExecuteCommand(cmdPos lexer.Position, baseCmd *parser.BaseCommand, session 
 				Spec: tektonv1.PipelineSpec{}, // Initialize spec
 			}
 			session.Pipelines[name] = newPipeline
+			prevCurrentPipeline := session.CurrentPipeline // Capture for undo
+			prevCurrentTask := session.CurrentTask         // Capture for undo
 			session.CurrentPipeline = newPipeline
 			session.CurrentTask = nil
+
+			session.PushRevertAction(func(s *state.Session) {
+				delete(s.Pipelines, name)
+				feedback.Infof("Undo: Pipeline '%s' deleted.", name)
+				// Try to restore previous context, if this was the one being made current
+				// This logic might need refinement if select also gets undo
+				if s.CurrentPipeline != nil && s.CurrentPipeline.Name == name {
+					s.CurrentPipeline = prevCurrentPipeline
+					s.CurrentTask = prevCurrentTask // Restore task context too, as pipeline change clears it
+					if s.CurrentPipeline != nil {
+						feedback.Infof("Undo: Current pipeline restored to '%s'.", s.CurrentPipeline.Name)
+					} else {
+						feedback.Infof("Undo: Current pipeline cleared.")
+					}
+				}
+			})
+
 			feedback.Infof("Pipeline '%s' created and set as current.", name)
 			return newPipeline, nil
 		case "select":
@@ -139,12 +158,19 @@ func ExecuteCommand(cmdPos lexer.Position, baseCmd *parser.BaseCommand, session 
 				Spec: tektonv1.TaskSpec{}, // Initialize spec
 			}
 			session.Tasks[name] = newTask
+			prevCurrentTask := session.CurrentTask // Capture for undo
 			session.CurrentTask = newTask
-			feedback.Infof("Task '%s' created and set as current.", name)
+
+			wasAddedToPipeline := false
+			pipelineName := ""
+			var originalPipelineTasks []tektonv1.PipelineTask
 
 			if session.CurrentPipeline != nil {
-				// Check if task already exists in pipeline, if so, maybe update its WhenExpressions?
-				// For now, we add a new PipelineTask or update an existing one's WhenExpressions.
+				pipelineName = session.CurrentPipeline.Name
+				// Store a copy of the pipeline's tasks *before* modification
+				originalPipelineTasks = make([]tektonv1.PipelineTask, len(session.CurrentPipeline.Spec.Tasks))
+				copy(originalPipelineTasks, session.CurrentPipeline.Spec.Tasks)
+
 				var existingPipelineTask *tektonv1.PipelineTask
 				ptIndex := -1
 				for i, pt := range session.CurrentPipeline.Spec.Tasks {
@@ -154,33 +180,48 @@ func ExecuteCommand(cmdPos lexer.Position, baseCmd *parser.BaseCommand, session 
 						break
 					}
 				}
-
 				tektonWhens := convertToTektonWhenExpressions(whenClause)
-
 				if existingPipelineTask != nil {
-					// Task already in pipeline, update its WhenExpressions
+					// This part of create logic seems to imply updating existing, which might be complex for undo
+					// For now, focusing on undoing the creation and simple addition.
 					session.CurrentPipeline.Spec.Tasks[ptIndex].When = tektonWhens
-					if len(tektonWhens) > 0 {
-						feedback.Infof("When conditions updated for task '%s' in pipeline '%s'.", name, session.CurrentPipeline.Name)
-					} else {
-						// If whenClause is nil/empty, ensure When is nil (clearing previous conditions)
-						session.CurrentPipeline.Spec.Tasks[ptIndex].When = nil
-					}
+					wasAddedToPipeline = true // Or updated
 				} else {
 					pipelineTask := tektonv1.PipelineTask{
-						Name: name, // Name of the PipelineTask instance
-						TaskRef: &tektonv1.TaskRef{
-							Name: name, // Name of the Task definition
-							Kind: tektonv1.NamespacedTaskKind,
-						},
-						When: tektonWhens,
+						Name:    name,
+						TaskRef: &tektonv1.TaskRef{Name: name, Kind: tektonv1.NamespacedTaskKind},
+						When:    tektonWhens,
 					}
 					session.CurrentPipeline.Spec.Tasks = append(session.CurrentPipeline.Spec.Tasks, pipelineTask)
-					if len(tektonWhens) > 0 {
-						feedback.Infof("Task '%s' added to pipeline '%s' with when conditions.", name, session.CurrentPipeline.Name)
+					wasAddedToPipeline = true
+				}
+			}
+
+			session.PushRevertAction(func(s *state.Session) {
+				delete(s.Tasks, name)
+				feedback.Infof("Undo: Task '%s' deleted.", name)
+				if s.CurrentTask != nil && s.CurrentTask.Name == name {
+					s.CurrentTask = prevCurrentTask
+					if s.CurrentTask != nil {
+						feedback.Infof("Undo: Current task restored to '%s'.", s.CurrentTask.Name)
 					} else {
-						feedback.Infof("Task '%s' added to pipeline '%s'.", name, session.CurrentPipeline.Name)
+						feedback.Infof("Undo: Current task cleared.")
 					}
+				}
+				if wasAddedToPipeline && pipelineName != "" {
+					if p, ok := s.Pipelines[pipelineName]; ok {
+						p.Spec.Tasks = originalPipelineTasks // Restore the pipeline's task list
+						feedback.Infof("Undo: Task '%s' removed from pipeline '%s'.", name, pipelineName)
+					}
+				}
+			})
+
+			feedback.Infof("Task '%s' created and set as current.", name)
+			if wasAddedToPipeline {
+				if len(convertToTektonWhenExpressions(whenClause)) > 0 {
+					feedback.Infof("Task '%s' added to pipeline '%s' with when conditions.", name, session.CurrentPipeline.Name)
+				} else {
+					feedback.Infof("Task '%s' added to pipeline '%s'.", name, session.CurrentPipeline.Name)
 				}
 			}
 			return newTask, nil
@@ -194,9 +235,6 @@ func ExecuteCommand(cmdPos lexer.Position, baseCmd *parser.BaseCommand, session 
 				return nil, errorWithPosition(baseCmd.Pos, "task '%s' not found", name)
 			}
 			session.CurrentTask = t
-			// Optionally, if a task is selected, we might want to ensure CurrentPipeline is the one it belongs to,
-			// if we start associating tasks with pipelines more directly in the session state beyond Pipeline.Spec.Tasks.
-			// For now, just selecting the task is fine.
 			feedback.Infof("Task '%s' selected as current.", name)
 			return t, nil
 		default:
@@ -222,22 +260,55 @@ func ExecuteCommand(cmdPos lexer.Position, baseCmd *parser.BaseCommand, session 
 			}
 		}
 
-		found := false
+		taskName := session.CurrentTask.Name
+		var originalParamSpec *tektonv1.ParamSpec
+		originalParamIndex := -1
+		paramExisted := false
+
 		for i, p := range session.CurrentTask.Spec.Params {
 			if p.Name == paramName {
+				// Deep copy original for revert
+				copiedSpec := p.DeepCopy()
+				originalParamSpec = copiedSpec
+				originalParamIndex = i
+				paramExisted = true
 				session.CurrentTask.Spec.Params[i].Default = &tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: paramValue}
-				found = true
 				break
 			}
 		}
-		if !found {
+		if !paramExisted {
 			newParamSpec := tektonv1.ParamSpec{
 				Name:    paramName,
 				Type:    tektonv1.ParamTypeString,
 				Default: &tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: paramValue},
 			}
 			session.CurrentTask.Spec.Params = append(session.CurrentTask.Spec.Params, newParamSpec)
+			originalParamIndex = len(session.CurrentTask.Spec.Params) - 1 // It's the last one added
 		}
+
+		session.PushRevertAction(func(s *state.Session) {
+			t, ok := s.Tasks[taskName]
+			if !ok {
+				feedback.Errorf("Undo: Task '%s' not found for reverting param '%s'.", taskName, paramName)
+				return
+			}
+			if paramExisted {
+				if originalParamSpec != nil && originalParamIndex < len(t.Spec.Params) && t.Spec.Params[originalParamIndex].Name == paramName {
+					t.Spec.Params[originalParamIndex].Default = originalParamSpec.Default // Restore original value
+					feedback.Infof("Undo: Param '%s' in task '%s' restored to previous value.", paramName, taskName)
+				} else {
+					feedback.Errorf("Undo: Failed to restore param '%s' for task '%s'. Original state unclear.", paramName, taskName)
+				}
+			} else { // Param was newly added
+				if originalParamIndex < len(t.Spec.Params) && t.Spec.Params[originalParamIndex].Name == paramName {
+					t.Spec.Params = append(t.Spec.Params[:originalParamIndex], t.Spec.Params[originalParamIndex+1:]...)
+					feedback.Infof("Undo: Param '%s' removed from task '%s'.", paramName, taskName)
+				} else {
+					feedback.Errorf("Undo: Failed to remove param '%s' for task '%s'. Original state unclear.", paramName, taskName)
+				}
+			}
+		})
+
 		feedback.Infof("Param '%s' set to '%s' for task '%s'.", paramName, paramValue, session.CurrentTask.Name)
 		return session.CurrentTask, nil
 	case "step":
@@ -246,18 +317,19 @@ func ExecuteCommand(cmdPos lexer.Position, baseCmd *parser.BaseCommand, session 
 			if session.CurrentTask == nil {
 				return nil, errorWithPosition(baseCmd.Pos, "no task in context. Use 'task create <name>' first")
 			}
+			taskNameForUndo := session.CurrentTask.Name // Capture before any potential context change
+			originalStepsLen := len(session.CurrentTask.Spec.Steps)
+
 			stepName := ""
 			imageName := ""
-			// Parse Args for step name and --image flag
 			for _, arg := range baseCmd.Args {
 				if strings.HasPrefix(arg, "--image=") {
 					imageName = strings.TrimPrefix(arg, "--image=")
 				} else if arg == "--image" {
-					// Next arg should be the image name, handled below
 				} else if !strings.HasPrefix(arg, "--") && !strings.Contains(arg, "=") {
 					if stepName == "" {
 						stepName = arg
-					} // else other args not captured explicitly for step fields yet
+					}
 				}
 			}
 			if imageName == "" {
@@ -288,6 +360,22 @@ func ExecuteCommand(cmdPos lexer.Position, baseCmd *parser.BaseCommand, session 
 				Script: scriptContent,
 			}
 			session.CurrentTask.Spec.Steps = append(session.CurrentTask.Spec.Steps, newStep)
+
+			session.PushRevertAction(func(s *state.Session) {
+				task, ok := s.Tasks[taskNameForUndo]
+				if !ok {
+					feedback.Errorf("Undo: Task '%s' not found for reverting step add.", taskNameForUndo)
+					return
+				}
+				if len(task.Spec.Steps) > originalStepsLen { // Check if a step was actually added
+					removedStep := task.Spec.Steps[len(task.Spec.Steps)-1]
+					task.Spec.Steps = task.Spec.Steps[:len(task.Spec.Steps)-1]
+					feedback.Infof("Undo: Step '%s' removed from task '%s'.", removedStep.Name, taskNameForUndo)
+				} else {
+					feedback.Infof("Undo: No step to remove from task '%s' or steps changed unexpectedly.", taskNameForUndo)
+				}
+			})
+
 			feedback.Infof("Step '%s' with image '%s' added to task '%s'.", stepName, imageName, session.CurrentTask.Name)
 			if scriptContent != "" {
 				feedback.Infof("Step '%s' script:\n%s", stepName, scriptContent)
@@ -306,13 +394,13 @@ func ExecuteCommand(cmdPos lexer.Position, baseCmd *parser.BaseCommand, session 
 			if yamlOutput == "" {
 				feedback.Infof("# No resources to export.")
 			} else {
-				feedback.Infof(yamlOutput) // ExportAll already formats as YAML string
+				feedback.Infof(yamlOutput)
 			}
-			return yamlOutput, nil
+			return yamlOutput, nil // Export is read-only, no undo
 		default:
 			return nil, errorWithPosition(baseCmd.Pos, "unknown action '%s' for kind 'export'", baseCmd.Action)
 		}
-	case "apply":
+	case "apply": // Apply is not easily undoable in this context, as it affects external state.
 		switch baseCmd.Action {
 		case "all":
 			if len(baseCmd.Args) != 1 {
@@ -323,17 +411,16 @@ func ExecuteCommand(cmdPos lexer.Position, baseCmd *parser.BaseCommand, session 
 				return nil, errorWithPosition(baseCmd.Pos, "namespace cannot be empty for apply all")
 			}
 			feedback.Infof("Applying all resources to namespace '%s'...", ns)
-			// Use context.Background() for now, can be made configurable if needed
 			err := session.ApplyAll(context.Background(), ns)
 			if err != nil {
 				return nil, errorWithPosition(baseCmd.Pos, "failed to apply resources: %w", err)
 			}
 			feedback.Infof("All resources applied successfully.")
-			return nil, nil // Or some status object
+			return nil, nil
 		default:
 			return nil, errorWithPosition(baseCmd.Pos, "unknown action '%s' for kind 'apply'", baseCmd.Action)
 		}
-	case "list":
+	case "list": // List is read-only
 		switch baseCmd.Action {
 		case "tasks":
 			if len(baseCmd.Args) != 0 {
@@ -361,7 +448,7 @@ func ExecuteCommand(cmdPos lexer.Position, baseCmd *parser.BaseCommand, session 
 			}
 			sort.Strings(names)
 			return names, nil
-		case "stepactions": // As requested, stubbed for now
+		case "stepactions":
 			if len(baseCmd.Args) != 0 {
 				return nil, errorWithPosition(baseCmd.Pos, "list stepactions expects 0 arguments, got %d", len(baseCmd.Args))
 			}
@@ -369,7 +456,7 @@ func ExecuteCommand(cmdPos lexer.Position, baseCmd *parser.BaseCommand, session 
 		default:
 			return nil, errorWithPosition(baseCmd.Pos, "unknown action '%s' for kind 'list'. Try 'tasks', 'pipelines', or 'stepactions'.", baseCmd.Action)
 		}
-	case "show":
+	case "show": // Show is read-only
 		switch baseCmd.Action {
 		case "task":
 			if len(baseCmd.Args) != 1 {
@@ -408,6 +495,31 @@ func ExecuteCommand(cmdPos lexer.Position, baseCmd *parser.BaseCommand, session 
 		default:
 			return nil, errorWithPosition(baseCmd.Pos, "unknown action '%s' for kind 'show'. Try 'task <name>' or 'pipeline <name>'.", baseCmd.Action)
 		}
+	case "undo":
+		if len(baseCmd.Args) != 0 {
+			return nil, errorWithPosition(baseCmd.Pos, "undo command expects no arguments")
+		}
+		if baseCmd.Action != "" {
+			return nil, errorWithPosition(baseCmd.Pos, "undo command does not take an action")
+		}
+		revertAction := session.PopRevertAction()
+		if revertAction != nil {
+			revertAction(session) // Execute the revert function
+			// feedback.Infof("Last action undone.") // Revert functions should provide their own specific feedback
+		} else {
+			feedback.Infof("Nothing to undo.")
+		}
+		return nil, nil
+	case "reset":
+		if len(baseCmd.Args) != 0 {
+			return nil, errorWithPosition(baseCmd.Pos, "reset command expects no arguments")
+		}
+		if baseCmd.Action != "" {
+			return nil, errorWithPosition(baseCmd.Pos, "reset command does not take an action")
+		}
+		session.Reset()
+		feedback.Infof("Session reset.")
+		return nil, nil
 	default:
 		return nil, errorWithPosition(baseCmd.Pos, "unknown command kind: %s", baseCmd.Kind)
 	}

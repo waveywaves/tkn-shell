@@ -513,3 +513,139 @@ func TestExecuteCommand_ShowCommands(t *testing.T) {
 	_ = executeShowCmd("show task", true, "show task expects 1 argument")
 	_ = executeShowCmd("show task task1 task2", true, "show task expects 1 argument")
 }
+
+func TestExecuteCommand_UndoResetCommands(t *testing.T) {
+	session := state.NewSession()
+
+	executeCmd := func(input string) {
+		t.Helper()
+		pl, err := parser.ParseLine(input)
+		if err != nil {
+			t.Fatalf("ParseLine(%q) failed: %v", input, err)
+		}
+		if len(pl.Cmds) != 1 {
+			t.Fatalf("Expected 1 command from ParseLine(%q), got %d", input, len(pl.Cmds))
+		}
+		_, execErr := engine.ExecuteCommand(pl.Cmds[0].Pos, pl.Cmds[0].Cmd, session, nil, nil)
+		if execErr != nil {
+			t.Fatalf("ExecuteCommand(%q) failed: %v", input, execErr)
+		}
+	}
+
+	// 1. Undo empty stack
+	executeCmd("undo") // Should print "Nothing to undo."
+	if len(session.PastActions) != 0 {
+		t.Errorf("Expected PastActions to be empty after undo on empty stack, got %d", len(session.PastActions))
+	}
+
+	// 2. Create pipeline, then undo
+	executeCmd("pipeline create p-undo")
+	if _, ok := session.Pipelines["p-undo"]; !ok {
+		t.Fatal("Pipeline p-undo not created")
+	}
+	if session.CurrentPipeline == nil || session.CurrentPipeline.Name != "p-undo" {
+		t.Fatal("CurrentPipeline not set to p-undo")
+	}
+	executeCmd("undo")
+	if _, ok := session.Pipelines["p-undo"]; ok {
+		t.Error("Pipeline p-undo still exists after undo")
+	}
+	if session.CurrentPipeline != nil {
+		t.Error("CurrentPipeline not reset after undoing its creation")
+	}
+	if len(session.PastActions) != 0 {
+		t.Errorf("Expected PastActions to be empty, got %d", len(session.PastActions))
+	}
+
+	// 3. Create task, then undo
+	executeCmd("task create t-undo")
+	if _, ok := session.Tasks["t-undo"]; !ok {
+		t.Fatal("Task t-undo not created")
+	}
+	if session.CurrentTask == nil || session.CurrentTask.Name != "t-undo" {
+		t.Fatal("CurrentTask not set to t-undo")
+	}
+	executeCmd("undo")
+	if _, ok := session.Tasks["t-undo"]; ok {
+		t.Error("Task t-undo still exists after undo")
+	}
+	if session.CurrentTask != nil {
+		t.Error("CurrentTask not reset after undoing its creation")
+	}
+
+	// 4. Create task in pipeline, then undo
+	executeCmd("pipeline create p-for-task-undo")
+	executeCmd("task create t-in-p-undo") // This task is added to p-for-task-undo
+	pipelineForTaskUndo := session.Pipelines["p-for-task-undo"]
+	if len(pipelineForTaskUndo.Spec.Tasks) != 1 || pipelineForTaskUndo.Spec.Tasks[0].Name != "t-in-p-undo" {
+		t.Fatalf("Task t-in-p-undo not added to pipeline p-for-task-undo, spec: %+v", pipelineForTaskUndo.Spec.Tasks)
+	}
+	executeCmd("undo") // Undo task create t-in-p-undo
+	if _, ok := session.Tasks["t-in-p-undo"]; ok {
+		t.Error("Task t-in-p-undo still exists after undo")
+	}
+	if len(pipelineForTaskUndo.Spec.Tasks) != 0 {
+		t.Errorf("Task t-in-p-undo not removed from pipeline p-for-task-undo spec after undo, got: %+v", pipelineForTaskUndo.Spec.Tasks)
+	}
+	executeCmd("undo") // Undo pipeline create p-for-task-undo
+	if _, ok := session.Pipelines["p-for-task-undo"]; ok {
+		t.Error("Pipeline p-for-task-undo still exists after second undo")
+	}
+
+	// 5. Add step, then undo
+	executeCmd("task create task-for-step-undo")
+	executeCmd("step add step1 --image alpine")
+	taskForStepUndo := session.Tasks["task-for-step-undo"]
+	if len(taskForStepUndo.Spec.Steps) != 1 {
+		t.Fatal("Step not added")
+	}
+	executeCmd("undo")
+	if len(taskForStepUndo.Spec.Steps) != 0 {
+		t.Errorf("Step not removed after undo, steps: %+v", taskForStepUndo.Spec.Steps)
+	}
+
+	// 6. Set new param, then undo
+	executeCmd("task create task-for-param-undo")
+	executeCmd("param newParam=val1")
+	taskForParamUndo := session.Tasks["task-for-param-undo"]
+	if len(taskForParamUndo.Spec.Params) != 1 {
+		t.Fatal("New param not added")
+	}
+	executeCmd("undo")
+	if len(taskForParamUndo.Spec.Params) != 0 {
+		t.Errorf("New param not removed after undo, params: %+v", taskForParamUndo.Spec.Params)
+	}
+
+	// 7. Set existing param, then undo
+	executeCmd("task create task-for-param-update-undo")
+	executeCmd("param existingParam=val1") // first set
+	// Ensure the task for param update is used for getting the original param
+	taskForParamUpdateUndoPreUpdate := session.Tasks["task-for-param-update-undo"]
+	if taskForParamUpdateUndoPreUpdate == nil || len(taskForParamUpdateUndoPreUpdate.Spec.Params) == 0 {
+		t.Fatal("Task for param update or its param not found before update.")
+	}
+	originalParam := taskForParamUpdateUndoPreUpdate.Spec.Params[0].DeepCopy()
+	executeCmd("param existingParam=val2") // update
+	taskForParamUpdateUndo := session.Tasks["task-for-param-update-undo"]
+	if taskForParamUpdateUndo == nil || len(taskForParamUpdateUndo.Spec.Params) == 0 || taskForParamUpdateUndo.Spec.Params[0].Default.StringVal != "val2" {
+		t.Fatal("Param not updated to val2")
+	}
+	executeCmd("undo") // undo update to val2
+	if len(taskForParamUpdateUndo.Spec.Params) == 0 || !reflect.DeepEqual(taskForParamUpdateUndo.Spec.Params[0].Default, originalParam.Default) {
+		t.Errorf("Param not restored to val1 after undo. Got: %+v, Expected Default: %+v", taskForParamUpdateUndo.Spec.Params[0], originalParam.Default)
+	}
+
+	// 8. Reset session
+	executeCmd("pipeline create p-reset")
+	executeCmd("task create t-reset")
+	if len(session.PastActions) == 0 {
+		t.Fatal("Expected PastActions to have items before reset")
+	}
+	executeCmd("reset")
+	if len(session.Pipelines) != 0 || len(session.Tasks) != 0 || session.CurrentPipeline != nil || session.CurrentTask != nil {
+		t.Error("Session not empty after reset")
+	}
+	if len(session.PastActions) != 0 {
+		t.Error("PastActions not cleared after reset")
+	}
+}
