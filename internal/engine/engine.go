@@ -19,6 +19,37 @@ import (
 	"k8s.io/apimachinery/pkg/selection"
 )
 
+// CommandExecutorSession defines the interface ExecuteCommand uses to interact with the session.
+// This allows for easier mocking in tests.
+type CommandExecutorSession interface {
+	// Pipeline operations
+	GetPipelines() map[string]*tektonv1.Pipeline
+	SetCurrentPipeline(p *tektonv1.Pipeline)
+	GetCurrentPipeline() *tektonv1.Pipeline
+	AddPipeline(name string, p *tektonv1.Pipeline)
+	DeletePipeline(name string)
+	RunPipeline(ctx context.Context, pipelineName string, params []tektonv1.Param, namespace string) (*tektonv1.PipelineRun, error)
+
+	// Task operations
+	GetTasks() map[string]*tektonv1.Task
+	SetCurrentTask(t *tektonv1.Task)
+	GetCurrentTask() *tektonv1.Task
+	AddTask(name string, t *tektonv1.Task)
+	DeleteTask(name string)
+	RunTask(ctx context.Context, taskName string, params []tektonv1.Param, namespace string) (*tektonv1.TaskRun, error)
+
+	// Undo operations
+	// Note: state.RevertFunc takes a concrete *state.Session. This is a compromise
+	// to avoid more invasive changes to the RevertFunc type itself for now.
+	// Mocks will need to provide a PushRevertAction that can accept this type.
+	PushRevertAction(revert state.RevertFunc)
+	PopRevertAction() state.RevertFunc
+
+	// General state operations
+	// ApplyAll(ctx context.Context, ns string) error // ApplyAll is not directly called by ExecuteCommand
+	Reset() // Called by "reset" command
+}
+
 // Tekton Operator constants (local definition as a workaround)
 const (
 	operatorIn    = selection.In
@@ -38,7 +69,7 @@ func errorWithPosition(pos lexer.Position, message string, args ...interface{}) 
 // For now, this is not directly implemented by parser.Command due to package restrictions.
 // Instead, ExecuteCommand function handles the logic for a parser.Command.
 type Node interface {
-	Apply(session *state.Session, prevResult any) (any, error)
+	Apply(session CommandExecutorSession, prevResult any) (any, error)
 }
 
 // interpolateParams replaces $(params.name) with the param's default value in a string.
@@ -79,7 +110,7 @@ func convertToTektonWhenExpressions(whenClause *parser.WhenClause) []tektonv1.Wh
 
 // ExecuteCommand processes a base command and updates the session state.
 // It can optionally apply a WhenClause to certain created resources (e.g., PipelineTask).
-func ExecuteCommand(cmdPos lexer.Position, baseCmd *parser.BaseCommand, session *state.Session, prevResult any, whenClause *parser.WhenClause) (any, error) {
+func ExecuteCommand(cmdPos lexer.Position, baseCmd *parser.BaseCommand, session CommandExecutorSession, prevResult any, whenClause *parser.WhenClause) (any, error) {
 	if baseCmd == nil {
 		return nil, errorWithPosition(cmdPos, "ExecuteCommand called with nil baseCmd")
 	}
@@ -92,7 +123,7 @@ func ExecuteCommand(cmdPos lexer.Position, baseCmd *parser.BaseCommand, session 
 				return nil, errorWithPosition(baseCmd.Pos, "pipeline create expects 1 argument (name), got %d", len(baseCmd.Args))
 			}
 			name := baseCmd.Args[0]
-			if _, exists := session.Pipelines[name]; exists {
+			if _, exists := session.GetPipelines()[name]; exists {
 				return nil, errorWithPosition(baseCmd.Pos, "pipeline %s already exists", name)
 			}
 			newPipeline := &tektonv1.Pipeline{
@@ -101,22 +132,22 @@ func ExecuteCommand(cmdPos lexer.Position, baseCmd *parser.BaseCommand, session 
 				},
 				Spec: tektonv1.PipelineSpec{}, // Initialize spec
 			}
-			session.Pipelines[name] = newPipeline
-			prevCurrentPipeline := session.CurrentPipeline // Capture for undo
-			prevCurrentTask := session.CurrentTask         // Capture for undo
-			session.CurrentPipeline = newPipeline
-			session.CurrentTask = nil
+			session.AddPipeline(name, newPipeline)
+			prevCurrentPipeline := session.GetCurrentPipeline() // Capture for undo
+			prevCurrentTask := session.GetCurrentTask()         // Capture for undo
+			session.SetCurrentPipeline(newPipeline)
+			session.SetCurrentTask(nil)
 
 			session.PushRevertAction(func(s *state.Session) {
-				delete(s.Pipelines, name)
+				s.DeletePipeline(name)
 				feedback.Infof("Undo: Pipeline '%s' deleted.", name)
 				// Try to restore previous context, if this was the one being made current
 				// This logic might need refinement if select also gets undo
-				if s.CurrentPipeline != nil && s.CurrentPipeline.Name == name {
-					s.CurrentPipeline = prevCurrentPipeline
-					s.CurrentTask = prevCurrentTask // Restore task context too, as pipeline change clears it
-					if s.CurrentPipeline != nil {
-						feedback.Infof("Undo: Current pipeline restored to '%s'.", s.CurrentPipeline.Name)
+				if s.GetCurrentPipeline() != nil && s.GetCurrentPipeline().Name == name {
+					s.SetCurrentPipeline(prevCurrentPipeline)
+					s.SetCurrentTask(prevCurrentTask) // Restore task context too, as pipeline change clears it
+					if s.GetCurrentPipeline() != nil {
+						feedback.Infof("Undo: Current pipeline restored to '%s'.", s.GetCurrentPipeline().Name)
 					} else {
 						feedback.Infof("Undo: Current pipeline cleared.")
 					}
@@ -130,14 +161,110 @@ func ExecuteCommand(cmdPos lexer.Position, baseCmd *parser.BaseCommand, session 
 				return nil, errorWithPosition(baseCmd.Pos, "pipeline select expects 1 argument (name), got %d", len(baseCmd.Args))
 			}
 			name := baseCmd.Args[0]
-			p, exists := session.Pipelines[name]
+			p, exists := session.GetPipelines()[name]
 			if !exists {
 				return nil, errorWithPosition(baseCmd.Pos, "pipeline %s not found", name)
 			}
-			session.CurrentPipeline = p
-			session.CurrentTask = nil // Clear task context when pipeline changes
+			session.SetCurrentPipeline(p)
+			session.SetCurrentTask(nil) // Clear task context when pipeline changes
 			feedback.Infof("Pipeline '%s' selected as current.", name)
 			return p, nil
+		case "run":
+			if len(baseCmd.Args) < 1 {
+				return nil, errorWithPosition(baseCmd.Pos, "pipeline run expects at least 1 argument (pipeline_name), got 0")
+			}
+			pipelineName := baseCmd.Args[0]
+			_, exists := session.GetPipelines()[pipelineName]
+			if !exists {
+				return nil, errorWithPosition(baseCmd.Pos, "pipeline '%s' not found in session", pipelineName)
+			}
+
+			var runParams []tektonv1.Param
+			runNamespace := "default" // Default namespace, can be overridden
+
+			// Start parsing from baseCmd.Args[1]
+			args := baseCmd.Args[1:]
+			for i := 0; i < len(args); i++ {
+				switch args[i] {
+				case "param":
+					// Check for "param name= value" format first, as it's the primary expectation from parser
+					if i+2 < len(args) { // Need at least two tokens after "param": name= and value
+						paramNameArg := args[i+1]  // Expected: "name="
+						paramValueArg := args[i+2] // Expected: "value"
+
+						if strings.HasSuffix(paramNameArg, "=") {
+							paramName := strings.TrimSuffix(paramNameArg, "=")
+							if paramName == "" {
+								return nil, errorWithPosition(baseCmd.Pos, "invalid param format: param name cannot be empty in '%s'", paramNameArg)
+							}
+							paramValue := paramValueArg
+							// Unquote value
+							if len(paramValue) >= 2 {
+								firstChar := paramValue[0]
+								lastChar := paramValue[len(paramValue)-1]
+								if (firstChar == '"' && lastChar == '"') || (firstChar == '\'' && lastChar == '\'') {
+									paramValue = paramValue[1 : len(paramValue)-1]
+								}
+							}
+							runParams = append(runParams, tektonv1.Param{
+								Name:  paramName,
+								Value: tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: paramValue},
+							})
+							i += 2 // Consumed "name=" and "value"
+						} else {
+							// This is for "param name value" (e.g. param image "nginx:latest") - invalid
+							return nil, errorWithPosition(baseCmd.Pos, "invalid param format: expected <name>=, got '%s'", paramNameArg)
+						}
+					} else if i+1 < len(args) && strings.Contains(args[i+1], "=") && !strings.HasSuffix(args[i+1], "=") {
+						// Fallback for "param name=value" (single token)
+						parts := strings.SplitN(args[i+1], "=", 2)
+						// Should be len(parts) == 2 due to checks, but verify name part again
+						if parts[0] == "" {
+							return nil, errorWithPosition(baseCmd.Pos, "invalid param format: param name cannot be empty in <name>=<value>, got '%s'", args[i+1])
+						}
+						paramName := parts[0]
+						paramValue := parts[1]
+						// Unquote value
+						if len(paramValue) >= 2 {
+							firstChar := paramValue[0]
+							lastChar := paramValue[len(paramValue)-1]
+							if (firstChar == '"' && lastChar == '"') || (firstChar == '\'' && lastChar == '\'') {
+								paramValue = paramValue[1 : len(paramValue)-1]
+							}
+						}
+						runParams = append(runParams, tektonv1.Param{
+							Name:  paramName,
+							Value: tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: paramValue},
+						})
+						i++ // Consumed "name=value"
+					} else {
+						// Not enough arguments for any valid param format or malformed.
+						if i+1 < len(args) {
+							return nil, errorWithPosition(baseCmd.Pos, "invalid param format near '%s'. Expected <name>=<value> or <name>= <value>", args[i+1])
+						}
+						return nil, errorWithPosition(baseCmd.Pos, "incomplete 'param' definition after 'param' keyword")
+					}
+				case "namespace":
+					if i+1 >= len(args) {
+						return nil, errorWithPosition(baseCmd.Pos, "'namespace' keyword must be followed by a namespace name")
+					}
+					runNamespace = args[i+1]
+					i++ // Consumed namespace name
+				default:
+					return nil, errorWithPosition(baseCmd.Pos, "unexpected argument '%s' for pipeline run", args[i])
+				}
+			}
+
+			_, err := session.RunPipeline(context.Background(), pipelineName, runParams, runNamespace)
+			if err != nil {
+				// The RunPipeline method already calls feedback.Infof on success/failure details.
+				// We just need to return the error to the REPL to display if it was critical.
+				return nil, errorWithPosition(cmdPos, "failed to run pipeline '%s': %v", pipelineName, err)
+			}
+			// If RunPipeline is successful, it would have printed detailed feedback.
+			// We can add a simple confirmation here or rely on RunPipeline's feedback.
+			feedback.Infof("Pipeline '%s' run initiated.", pipelineName)
+			return nil, nil
 		default:
 			return nil, errorWithPosition(baseCmd.Pos, "unknown action '%s' for kind 'pipeline'", baseCmd.Action)
 		}
@@ -148,7 +275,7 @@ func ExecuteCommand(cmdPos lexer.Position, baseCmd *parser.BaseCommand, session 
 				return nil, errorWithPosition(baseCmd.Pos, "task create expects 1 argument (name), got %d", len(baseCmd.Args))
 			}
 			name := baseCmd.Args[0]
-			if _, exists := session.Tasks[name]; exists {
+			if _, exists := session.GetTasks()[name]; exists {
 				return nil, errorWithPosition(baseCmd.Pos, "task %s already exists", name)
 			}
 			newTask := &tektonv1.Task{
@@ -157,25 +284,25 @@ func ExecuteCommand(cmdPos lexer.Position, baseCmd *parser.BaseCommand, session 
 				},
 				Spec: tektonv1.TaskSpec{}, // Initialize spec
 			}
-			session.Tasks[name] = newTask
-			prevCurrentTask := session.CurrentTask // Capture for undo
-			session.CurrentTask = newTask
+			session.AddTask(name, newTask)
+			prevCurrentTask := session.GetCurrentTask() // Capture for undo
+			session.SetCurrentTask(newTask)
 
 			wasAddedToPipeline := false
 			pipelineName := ""
 			var originalPipelineTasks []tektonv1.PipelineTask
 
-			if session.CurrentPipeline != nil {
-				pipelineName = session.CurrentPipeline.Name
+			if session.GetCurrentPipeline() != nil {
+				pipelineName = session.GetCurrentPipeline().Name
 				// Store a copy of the pipeline's tasks *before* modification
-				originalPipelineTasks = make([]tektonv1.PipelineTask, len(session.CurrentPipeline.Spec.Tasks))
-				copy(originalPipelineTasks, session.CurrentPipeline.Spec.Tasks)
+				originalPipelineTasks = make([]tektonv1.PipelineTask, len(session.GetCurrentPipeline().Spec.Tasks))
+				copy(originalPipelineTasks, session.GetCurrentPipeline().Spec.Tasks)
 
 				var existingPipelineTask *tektonv1.PipelineTask
 				ptIndex := -1
-				for i, pt := range session.CurrentPipeline.Spec.Tasks {
+				for i, pt := range session.GetCurrentPipeline().Spec.Tasks {
 					if pt.Name == name || (pt.TaskRef != nil && pt.TaskRef.Name == name) {
-						existingPipelineTask = &session.CurrentPipeline.Spec.Tasks[i]
+						existingPipelineTask = &session.GetCurrentPipeline().Spec.Tasks[i]
 						ptIndex = i
 						break
 					}
@@ -184,7 +311,7 @@ func ExecuteCommand(cmdPos lexer.Position, baseCmd *parser.BaseCommand, session 
 				if existingPipelineTask != nil {
 					// This part of create logic seems to imply updating existing, which might be complex for undo
 					// For now, focusing on undoing the creation and simple addition.
-					session.CurrentPipeline.Spec.Tasks[ptIndex].When = tektonWhens
+					session.GetCurrentPipeline().Spec.Tasks[ptIndex].When = tektonWhens
 					wasAddedToPipeline = true // Or updated
 				} else {
 					pipelineTask := tektonv1.PipelineTask{
@@ -192,24 +319,24 @@ func ExecuteCommand(cmdPos lexer.Position, baseCmd *parser.BaseCommand, session 
 						TaskRef: &tektonv1.TaskRef{Name: name, Kind: tektonv1.NamespacedTaskKind},
 						When:    tektonWhens,
 					}
-					session.CurrentPipeline.Spec.Tasks = append(session.CurrentPipeline.Spec.Tasks, pipelineTask)
+					session.GetCurrentPipeline().Spec.Tasks = append(session.GetCurrentPipeline().Spec.Tasks, pipelineTask)
 					wasAddedToPipeline = true
 				}
 			}
 
 			session.PushRevertAction(func(s *state.Session) {
-				delete(s.Tasks, name)
+				s.DeleteTask(name)
 				feedback.Infof("Undo: Task '%s' deleted.", name)
-				if s.CurrentTask != nil && s.CurrentTask.Name == name {
-					s.CurrentTask = prevCurrentTask
-					if s.CurrentTask != nil {
-						feedback.Infof("Undo: Current task restored to '%s'.", s.CurrentTask.Name)
+				if s.GetCurrentTask() != nil && s.GetCurrentTask().Name == name {
+					s.SetCurrentTask(prevCurrentTask)
+					if s.GetCurrentTask() != nil {
+						feedback.Infof("Undo: Current task restored to '%s'.", s.GetCurrentTask().Name)
 					} else {
 						feedback.Infof("Undo: Current task cleared.")
 					}
 				}
 				if wasAddedToPipeline && pipelineName != "" {
-					if p, ok := s.Pipelines[pipelineName]; ok {
+					if p, ok := s.GetPipelines()[pipelineName]; ok {
 						p.Spec.Tasks = originalPipelineTasks // Restore the pipeline's task list
 						feedback.Infof("Undo: Task '%s' removed from pipeline '%s'.", name, pipelineName)
 					}
@@ -219,9 +346,9 @@ func ExecuteCommand(cmdPos lexer.Position, baseCmd *parser.BaseCommand, session 
 			feedback.Infof("Task '%s' created and set as current.", name)
 			if wasAddedToPipeline {
 				if len(convertToTektonWhenExpressions(whenClause)) > 0 {
-					feedback.Infof("Task '%s' added to pipeline '%s' with when conditions.", name, session.CurrentPipeline.Name)
+					feedback.Infof("Task '%s' added to pipeline '%s' with when conditions.", name, session.GetCurrentPipeline().Name)
 				} else {
-					feedback.Infof("Task '%s' added to pipeline '%s'.", name, session.CurrentPipeline.Name)
+					feedback.Infof("Task '%s' added to pipeline '%s'.", name, session.GetCurrentPipeline().Name)
 				}
 			}
 			return newTask, nil
@@ -230,13 +357,105 @@ func ExecuteCommand(cmdPos lexer.Position, baseCmd *parser.BaseCommand, session 
 				return nil, errorWithPosition(baseCmd.Pos, "task select expects 1 argument (name), got %d", len(baseCmd.Args))
 			}
 			name := baseCmd.Args[0]
-			t, exists := session.Tasks[name]
+			t, exists := session.GetTasks()[name]
 			if !exists {
 				return nil, errorWithPosition(baseCmd.Pos, "task '%s' not found", name)
 			}
-			session.CurrentTask = t
+			session.SetCurrentTask(t)
 			feedback.Infof("Task '%s' selected as current.", name)
 			return t, nil
+		case "run":
+			if len(baseCmd.Args) < 1 {
+				return nil, errorWithPosition(baseCmd.Pos, "task run expects at least 1 argument (task_name), got 0")
+			}
+			taskName := baseCmd.Args[0]
+			_, exists := session.GetTasks()[taskName]
+			if !exists {
+				return nil, errorWithPosition(baseCmd.Pos, "task '%s' not found in session", taskName)
+			}
+
+			var runParams []tektonv1.Param
+			runNamespace := "default" // Default namespace
+
+			args := baseCmd.Args[1:]
+			for i := 0; i < len(args); i++ {
+				switch args[i] {
+				case "param":
+					// Check for "param name= value" format first, as it's the primary expectation from parser
+					if i+2 < len(args) { // Need at least two tokens after "param": name= and value
+						paramNameArg := args[i+1]  // Expected: "name="
+						paramValueArg := args[i+2] // Expected: "value"
+
+						if strings.HasSuffix(paramNameArg, "=") {
+							paramName := strings.TrimSuffix(paramNameArg, "=")
+							if paramName == "" {
+								return nil, errorWithPosition(baseCmd.Pos, "invalid param format: param name cannot be empty in '%s'", paramNameArg)
+							}
+							paramValue := paramValueArg
+							// Unquote value
+							if len(paramValue) >= 2 {
+								firstChar := paramValue[0]
+								lastChar := paramValue[len(paramValue)-1]
+								if (firstChar == '"' && lastChar == '"') || (firstChar == '\'' && lastChar == '\'') {
+									paramValue = paramValue[1 : len(paramValue)-1]
+								}
+							}
+							runParams = append(runParams, tektonv1.Param{
+								Name:  paramName,
+								Value: tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: paramValue},
+							})
+							i += 2 // Consumed "name=" and "value"
+						} else {
+							// This is for "param name value" (e.g. param image "nginx:latest") - invalid
+							return nil, errorWithPosition(baseCmd.Pos, "invalid param format: expected <name>=, got '%s'", paramNameArg)
+						}
+					} else if i+1 < len(args) && strings.Contains(args[i+1], "=") && !strings.HasSuffix(args[i+1], "=") {
+						// Fallback for "param name=value" (single token)
+						parts := strings.SplitN(args[i+1], "=", 2)
+						// Should be len(parts) == 2 due to checks, but verify name part again
+						if parts[0] == "" {
+							return nil, errorWithPosition(baseCmd.Pos, "invalid param format: param name cannot be empty in <name>=<value>, got '%s'", args[i+1])
+						}
+						paramName := parts[0]
+						paramValue := parts[1]
+						// Unquote value
+						if len(paramValue) >= 2 {
+							firstChar := paramValue[0]
+							lastChar := paramValue[len(paramValue)-1]
+							if (firstChar == '"' && lastChar == '"') || (firstChar == '\'' && lastChar == '\'') {
+								paramValue = paramValue[1 : len(paramValue)-1]
+							}
+						}
+						runParams = append(runParams, tektonv1.Param{
+							Name:  paramName,
+							Value: tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: paramValue},
+						})
+						i++ // Consumed "name=value"
+					} else {
+						// Not enough arguments for any valid param format or malformed.
+						if i+1 < len(args) {
+							return nil, errorWithPosition(baseCmd.Pos, "invalid param format near '%s'. Expected <name>=<value> or <name>= <value>", args[i+1])
+						}
+						return nil, errorWithPosition(baseCmd.Pos, "incomplete 'param' definition after 'param' keyword")
+					}
+				case "namespace":
+					if i+1 >= len(args) {
+						return nil, errorWithPosition(baseCmd.Pos, "'namespace' keyword must be followed by a namespace name")
+					}
+					runNamespace = args[i+1]
+					i++ // Consumed namespace name
+				default:
+					return nil, errorWithPosition(baseCmd.Pos, "unexpected argument '%s' for task run", args[i])
+				}
+			}
+
+			// Placeholder for actual run logic - this will be a call to session.RunTask(...)
+			_, err := session.RunTask(context.Background(), taskName, runParams, runNamespace)
+			if err != nil {
+				return nil, errorWithPosition(cmdPos, "failed to run task '%s': %v", taskName, err)
+			}
+			feedback.Infof("Task '%s' run initiated.", taskName)
+			return nil, nil
 		default:
 			return nil, errorWithPosition(baseCmd.Pos, "unknown action '%s' for kind 'task'", baseCmd.Action)
 		}
@@ -244,7 +463,7 @@ func ExecuteCommand(cmdPos lexer.Position, baseCmd *parser.BaseCommand, session 
 		if baseCmd.Action != "" {
 			return nil, errorWithPosition(baseCmd.Pos, "param command does not take an action, got '%s'", baseCmd.Action)
 		}
-		if session.CurrentTask == nil {
+		if session.GetCurrentTask() == nil {
 			return nil, errorWithPosition(baseCmd.Pos, "no current task selected. Use 'task create <name>' or select an existing task first")
 		}
 		if len(baseCmd.Args) != 2 {
@@ -260,19 +479,19 @@ func ExecuteCommand(cmdPos lexer.Position, baseCmd *parser.BaseCommand, session 
 			}
 		}
 
-		taskName := session.CurrentTask.Name
+		taskName := session.GetCurrentTask().Name
 		var originalParamSpec *tektonv1.ParamSpec
 		originalParamIndex := -1
 		paramExisted := false
 
-		for i, p := range session.CurrentTask.Spec.Params {
+		for i, p := range session.GetCurrentTask().Spec.Params {
 			if p.Name == paramName {
 				// Deep copy original for revert
 				copiedSpec := p.DeepCopy()
 				originalParamSpec = copiedSpec
 				originalParamIndex = i
 				paramExisted = true
-				session.CurrentTask.Spec.Params[i].Default = &tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: paramValue}
+				session.GetCurrentTask().Spec.Params[i].Default = &tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: paramValue}
 				break
 			}
 		}
@@ -282,12 +501,12 @@ func ExecuteCommand(cmdPos lexer.Position, baseCmd *parser.BaseCommand, session 
 				Type:    tektonv1.ParamTypeString,
 				Default: &tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: paramValue},
 			}
-			session.CurrentTask.Spec.Params = append(session.CurrentTask.Spec.Params, newParamSpec)
-			originalParamIndex = len(session.CurrentTask.Spec.Params) - 1 // It's the last one added
+			session.GetCurrentTask().Spec.Params = append(session.GetCurrentTask().Spec.Params, newParamSpec)
+			originalParamIndex = len(session.GetCurrentTask().Spec.Params) - 1 // It's the last one added
 		}
 
 		session.PushRevertAction(func(s *state.Session) {
-			t, ok := s.Tasks[taskName]
+			t, ok := s.GetTasks()[taskName]
 			if !ok {
 				feedback.Errorf("Undo: Task '%s' not found for reverting param '%s'.", taskName, paramName)
 				return
@@ -309,16 +528,16 @@ func ExecuteCommand(cmdPos lexer.Position, baseCmd *parser.BaseCommand, session 
 			}
 		})
 
-		feedback.Infof("Param '%s' set to '%s' for task '%s'.", paramName, paramValue, session.CurrentTask.Name)
-		return session.CurrentTask, nil
+		feedback.Infof("Param '%s' set to '%s' for task '%s'.", paramName, paramValue, session.GetCurrentTask().Name)
+		return session.GetCurrentTask(), nil
 	case "step":
 		switch baseCmd.Action {
 		case "add":
-			if session.CurrentTask == nil {
+			if session.GetCurrentTask() == nil {
 				return nil, errorWithPosition(baseCmd.Pos, "no task in context. Use 'task create <name>' first")
 			}
-			taskNameForUndo := session.CurrentTask.Name // Capture before any potential context change
-			originalStepsLen := len(session.CurrentTask.Spec.Steps)
+			taskNameForUndo := session.GetCurrentTask().Name // Capture before any potential context change
+			originalStepsLen := len(session.GetCurrentTask().Spec.Steps)
 
 			stepName := ""
 			imageName := ""
@@ -352,17 +571,17 @@ func ExecuteCommand(cmdPos lexer.Position, baseCmd *parser.BaseCommand, session 
 					actualScript = actualScript[1 : len(actualScript)-1]
 				}
 			}
-			imageName = interpolateParams(imageName, session.CurrentTask.Spec.Params)
-			scriptContent := interpolateParams(actualScript, session.CurrentTask.Spec.Params)
+			imageName = interpolateParams(imageName, session.GetCurrentTask().Spec.Params)
+			scriptContent := interpolateParams(actualScript, session.GetCurrentTask().Spec.Params)
 			newStep := tektonv1.Step{
 				Name:   stepName,
 				Image:  imageName,
 				Script: scriptContent,
 			}
-			session.CurrentTask.Spec.Steps = append(session.CurrentTask.Spec.Steps, newStep)
+			session.GetCurrentTask().Spec.Steps = append(session.GetCurrentTask().Spec.Steps, newStep)
 
 			session.PushRevertAction(func(s *state.Session) {
-				task, ok := s.Tasks[taskNameForUndo]
+				task, ok := s.GetTasks()[taskNameForUndo]
 				if !ok {
 					feedback.Errorf("Undo: Task '%s' not found for reverting step add.", taskNameForUndo)
 					return
@@ -376,20 +595,26 @@ func ExecuteCommand(cmdPos lexer.Position, baseCmd *parser.BaseCommand, session 
 				}
 			})
 
-			feedback.Infof("Step '%s' with image '%s' added to task '%s'.", stepName, imageName, session.CurrentTask.Name)
+			feedback.Infof("Step '%s' with image '%s' added to task '%s'.", stepName, imageName, session.GetCurrentTask().Name)
 			if scriptContent != "" {
 				feedback.Infof("Step '%s' script:\n%s", stepName, scriptContent)
 			}
-			return session.CurrentTask, nil
+			return session.GetCurrentTask(), nil
 		default:
 			return nil, errorWithPosition(baseCmd.Pos, "unknown action '%s' for kind 'step'", baseCmd.Action)
 		}
 	case "export":
 		if baseCmd.Action == "all" {
-			if err := ValidateSession(session); err != nil {
+			// Cast to *state.Session for ValidateSession and ExportAll as they are not part of the interface
+			// and expect the concrete type. This is a known compromise.
+			concreteSession, ok := session.(*state.Session)
+			if !ok {
+				return nil, errorWithPosition(cmdPos, "internal error: session is not of type *state.Session for export")
+			}
+			if err := ValidateSession(concreteSession); err != nil {
 				return nil, errorWithPosition(cmdPos, "validation failed before export: %v", err)
 			}
-			yamlData, err := export.ExportAll(session)
+			yamlData, err := export.ExportAll(concreteSession)
 			if err != nil {
 				return nil, errorWithPosition(cmdPos, "failed to export: %v", err)
 			}
@@ -401,11 +626,16 @@ func ExecuteCommand(cmdPos lexer.Position, baseCmd *parser.BaseCommand, session 
 			if len(baseCmd.Args) != 1 {
 				return nil, errorWithPosition(baseCmd.Pos, "apply all expects 1 argument (namespace), got %d", len(baseCmd.Args))
 			}
-			if err := ValidateSession(session); err != nil {
+			// Cast to *state.Session for ValidateSession and ApplyAll
+			concreteSession, ok := session.(*state.Session)
+			if !ok {
+				return nil, errorWithPosition(cmdPos, "internal error: session is not of type *state.Session for apply")
+			}
+			if err := ValidateSession(concreteSession); err != nil {
 				return nil, errorWithPosition(cmdPos, "validation failed before apply: %v", err)
 			}
 			namespace := baseCmd.Args[0]
-			err := session.ApplyAll(context.Background(), namespace)
+			err := concreteSession.ApplyAll(context.Background(), namespace) // ApplyAll is a method on *state.Session
 			if err != nil {
 				return nil, errorWithPosition(cmdPos, "failed to apply: %v", err)
 			}
@@ -419,11 +649,11 @@ func ExecuteCommand(cmdPos lexer.Position, baseCmd *parser.BaseCommand, session 
 			if len(baseCmd.Args) != 0 {
 				return nil, errorWithPosition(baseCmd.Pos, "list tasks expects 0 arguments, got %d", len(baseCmd.Args))
 			}
-			if len(session.Tasks) == 0 {
+			if len(session.GetTasks()) == 0 {
 				return []string{"No tasks defined."}, nil
 			}
-			names := make([]string, 0, len(session.Tasks))
-			for name := range session.Tasks {
+			names := make([]string, 0, len(session.GetTasks()))
+			for name := range session.GetTasks() {
 				names = append(names, name)
 			}
 			sort.Strings(names)
@@ -432,11 +662,11 @@ func ExecuteCommand(cmdPos lexer.Position, baseCmd *parser.BaseCommand, session 
 			if len(baseCmd.Args) != 0 {
 				return nil, errorWithPosition(baseCmd.Pos, "list pipelines expects 0 arguments, got %d", len(baseCmd.Args))
 			}
-			if len(session.Pipelines) == 0 {
+			if len(session.GetPipelines()) == 0 {
 				return []string{"No pipelines defined."}, nil
 			}
-			names := make([]string, 0, len(session.Pipelines))
-			for name := range session.Pipelines {
+			names := make([]string, 0, len(session.GetPipelines()))
+			for name := range session.GetPipelines() {
 				names = append(names, name)
 			}
 			sort.Strings(names)
@@ -456,7 +686,7 @@ func ExecuteCommand(cmdPos lexer.Position, baseCmd *parser.BaseCommand, session 
 				return nil, errorWithPosition(baseCmd.Pos, "show task expects 1 argument (name), got %d", len(baseCmd.Args))
 			}
 			name := baseCmd.Args[0]
-			task, exists := session.Tasks[name]
+			task, exists := session.GetTasks()[name]
 			if !exists {
 				return nil, errorWithPosition(baseCmd.Pos, "task '%s' not found", name)
 			}
@@ -473,7 +703,7 @@ func ExecuteCommand(cmdPos lexer.Position, baseCmd *parser.BaseCommand, session 
 				return nil, errorWithPosition(baseCmd.Pos, "show pipeline expects 1 argument (name), got %d", len(baseCmd.Args))
 			}
 			name := baseCmd.Args[0]
-			pipeline, exists := session.Pipelines[name]
+			pipeline, exists := session.GetPipelines()[name]
 			if !exists {
 				return nil, errorWithPosition(baseCmd.Pos, "pipeline '%s' not found", name)
 			}
@@ -494,7 +724,12 @@ func ExecuteCommand(cmdPos lexer.Position, baseCmd *parser.BaseCommand, session 
 		}
 		revertFunc := session.PopRevertAction()
 		if revertFunc != nil {
-			revertFunc(session)
+			// Cast to *state.Session as RevertFunc expects the concrete type.
+			concreteSession, ok := session.(*state.Session)
+			if !ok {
+				return nil, errorWithPosition(cmdPos, "internal error: session is not of type *state.Session for undo")
+			}
+			revertFunc(concreteSession)
 			// feedback.Infof("Last action undone.") // Feedback is now in the RevertFunc
 		} else {
 			feedback.Infof("No actions to undo.")
@@ -511,7 +746,12 @@ func ExecuteCommand(cmdPos lexer.Position, baseCmd *parser.BaseCommand, session 
 		if len(baseCmd.Args) > 0 || baseCmd.Action != "" {
 			return nil, errorWithPosition(baseCmd.Pos, "validate command does not take arguments or actions")
 		}
-		err := ValidateSession(session)
+		// Cast to *state.Session for ValidateSession
+		concreteSession, ok := session.(*state.Session)
+		if !ok {
+			return nil, errorWithPosition(cmdPos, "internal error: session is not of type *state.Session for validate")
+		}
+		err := ValidateSession(concreteSession)
 		if err != nil {
 			return nil, errorWithPosition(cmdPos, "validation failed: %v", err)
 		}

@@ -75,7 +75,7 @@ func TestREPL_Integration_ExportAllScenario(t *testing.T) {
 	executor("pipeline create test-p")
 
 	// Add a description to make the PipelineSpec non-empty to pass validation
-	p, ok := sess.Pipelines["test-p"]
+	p, ok := sess.GetPipelines()["test-p"]
 	if !ok || p == nil {
 		t.Fatal("Pipeline 'test-p' not found in session after creation for adding description.")
 	}
@@ -154,7 +154,7 @@ func TestREPL_Integration_TranslatedExample(t *testing.T) {
 	}
 
 	// 1. Check Pipeline
-	pipeline, ok := localSess.Pipelines["example-pipeline"]
+	pipeline, ok := localSess.GetPipelines()["example-pipeline"]
 	if !ok {
 		t.Fatalf("Pipeline 'example-pipeline' not found in session")
 	}
@@ -181,7 +181,7 @@ func TestREPL_Integration_TranslatedExample(t *testing.T) {
 	}
 
 	// 3. Check "print-bound-state" Task
-	task1, ok := localSess.Tasks["print-bound-state"]
+	task1, ok := localSess.GetTasks()["print-bound-state"]
 	if !ok {
 		t.Fatalf("Task 'print-bound-state' not found in session")
 	}
@@ -215,7 +215,7 @@ func TestREPL_Integration_TranslatedExample(t *testing.T) {
 	}
 
 	// 4. Check "run-the-js" Task
-	task2, ok := localSess.Tasks["run-the-js"]
+	task2, ok := localSess.GetTasks()["run-the-js"]
 	if !ok {
 		t.Fatalf("Task 'run-the-js' not found in session")
 	}

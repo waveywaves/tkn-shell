@@ -22,7 +22,7 @@ func (s *Session) ApplyAll(ctx context.Context, ns string) error {
 	var applyErrors []error
 
 	// Apply Pipelines
-	for _, p := range s.Pipelines {
+	for _, p := range s.GetPipelines() {
 		pToApply := p.DeepCopy()
 		pToApply.APIVersion = tektonv1.SchemeGroupVersion.String()
 		pToApply.Kind = "Pipeline"
@@ -39,7 +39,7 @@ func (s *Session) ApplyAll(ctx context.Context, ns string) error {
 	}
 
 	// Apply Tasks
-	for _, tk := range s.Tasks {
+	for _, tk := range s.GetTasks() {
 		tkToApply := tk.DeepCopy()
 		tkToApply.APIVersion = tektonv1.SchemeGroupVersion.String()
 		tkToApply.Kind = "Task"

@@ -71,8 +71,8 @@ func executor(in string) {
 		}
 	}
 
-	if sess.CurrentPipeline != nil {
-		livePrefix = fmt.Sprintf("tekton(pipeline %s)> ", sess.CurrentPipeline.Name)
+	if sess.GetCurrentPipeline() != nil {
+		livePrefix = fmt.Sprintf("tekton(pipeline %s)> ", sess.GetCurrentPipeline().Name)
 	} else {
 		livePrefix = "tekton> "
 	}
@@ -81,8 +81,8 @@ func executor(in string) {
 func printHelp() {
 	feedback.Infof("tkn-shell Help:")
 	feedback.Infof("  Core Commands (Keywords):")
-	feedback.Infof("    pipeline   - Manage pipelines (create, select)")
-	feedback.Infof("    task       - Manage tasks (create, select)")
+	feedback.Infof("    pipeline   - Manage pipelines (create, select, run)")
+	feedback.Infof("    task       - Manage tasks (create, select, run)")
 	feedback.Infof("    step       - Add steps to tasks (add --image <img_name> [script])")
 	feedback.Infof("    param      - Set parameters for tasks (name=value)")
 	feedback.Infof("    when       - Define conditional execution (e.g., when input == \"val\" | task create ...)")
@@ -93,6 +93,10 @@ func printHelp() {
 	feedback.Infof("    validate   - Validate the current session state.")
 	feedback.Infof("    undo       - Revert the last modification (pipeline/task create, step add, param set).")
 	feedback.Infof("    reset      - Clear the current session state and undo history.")
+	feedback.Infof("")
+	feedback.Infof("  Run Command Syntax:")
+	feedback.Infof("    pipeline run <pipeline-name> [param <name>=<value>]... [namespace <ns>] ")
+	feedback.Infof("    task run <task-name> [param <name>=<value>]... [namespace <ns>] ")
 	feedback.Infof("")
 	feedback.Infof("  Syntax Tips:")
 	feedback.Infof("    - Chain commands using '|' (e.g., pipeline create foo | task create bar)")
@@ -126,6 +130,7 @@ func completer(d prompt.Document) []prompt.Suggest {
 
 		// Actions (could be context-dependent)
 		{Text: "create", Description: "Create a new resource"},
+		{Text: "run", Description: "Run a pipeline or task"},
 		{Text: "add", Description: "Add to an existing resource"},
 		{Text: "select", Description: "Select an existing resource as current context"},
 		{Text: "all", Description: "Target all applicable items (e.g., for export or apply)"},

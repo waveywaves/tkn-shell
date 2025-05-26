@@ -1,6 +1,8 @@
 package engine_test
 
 import (
+	"context"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -47,7 +49,7 @@ func TestExecuteCommand_PipelineTaskStepChain(t *testing.T) {
 
 	// Assertions
 	// 1. One Pipeline named "ci" exists
-	pipeline, ok := session.Pipelines["ci"]
+	pipeline, ok := session.GetPipelines()["ci"]
 	if !ok {
 		t.Fatalf("Pipeline 'ci' not found in session")
 	}
@@ -68,7 +70,7 @@ func TestExecuteCommand_PipelineTaskStepChain(t *testing.T) {
 	}
 
 	// 3. Task "build" exists
-	task, ok := session.Tasks["build"]
+	task, ok := session.GetTasks()["build"]
 	if !ok {
 		t.Fatalf("Task 'build' not found in session")
 	}
@@ -90,11 +92,11 @@ func TestExecuteCommand_PipelineTaskStepChain(t *testing.T) {
 	}
 
 	// Verify CurrentPipeline and CurrentTask are set as expected
-	if session.CurrentPipeline == nil || session.CurrentPipeline.Name != "ci" {
-		t.Errorf("Expected CurrentPipeline to be 'ci', got %+v", session.CurrentPipeline)
+	if session.GetCurrentPipeline() == nil || session.GetCurrentPipeline().Name != "ci" {
+		t.Errorf("Expected CurrentPipeline to be 'ci', got %+v", session.GetCurrentPipeline())
 	}
-	if session.CurrentTask == nil || session.CurrentTask.Name != "build" {
-		t.Errorf("Expected CurrentTask to be 'build', got %+v", session.CurrentTask)
+	if session.GetCurrentTask() == nil || session.GetCurrentTask().Name != "build" {
+		t.Errorf("Expected CurrentTask to be 'build', got %+v", session.GetCurrentTask())
 	}
 }
 
@@ -133,7 +135,7 @@ func TestExecuteCommand_TaskWithParamAndStepInterpolation(t *testing.T) {
 	}
 
 	// Assertions
-	task, ok := session.Tasks["my-task"]
+	task, ok := session.GetTasks()["my-task"]
 	if !ok {
 		t.Fatalf("Task 'my-task' not found in session")
 	}
@@ -205,8 +207,8 @@ func TestExecuteCommand_SelectTask(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error creating task1: %v", err)
 	}
-	if session.CurrentTask == nil || session.CurrentTask.Name != "task1" {
-		t.Fatalf("Expected CurrentTask to be 'task1' after creation, got %v", session.CurrentTask)
+	if session.GetCurrentTask() == nil || session.GetCurrentTask().Name != "task1" {
+		t.Fatalf("Expected CurrentTask to be 'task1' after creation, got %v", session.GetCurrentTask())
 	}
 
 	// Create task2
@@ -216,8 +218,8 @@ func TestExecuteCommand_SelectTask(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error creating task2: %v", err)
 	}
-	if session.CurrentTask == nil || session.CurrentTask.Name != "task2" {
-		t.Fatalf("Expected CurrentTask to be 'task2' after creation, got %v", session.CurrentTask)
+	if session.GetCurrentTask() == nil || session.GetCurrentTask().Name != "task2" {
+		t.Fatalf("Expected CurrentTask to be 'task2' after creation, got %v", session.GetCurrentTask())
 	}
 
 	// Select task1
@@ -228,8 +230,8 @@ func TestExecuteCommand_SelectTask(t *testing.T) {
 		t.Fatalf("Error selecting task1: %v", err)
 	}
 
-	if session.CurrentTask == nil || session.CurrentTask.Name != "task1" {
-		t.Errorf("Expected CurrentTask to be 'task1' after selection, got %v", session.CurrentTask)
+	if session.GetCurrentTask() == nil || session.GetCurrentTask().Name != "task1" {
+		t.Errorf("Expected CurrentTask to be 'task1' after selection, got %v", session.GetCurrentTask())
 	}
 	selectedTask, ok := selectedObj.(*tektonv1.Task)
 	if !ok || selectedTask.Name != "task1" {
@@ -272,16 +274,25 @@ func TestExecuteCommand_SelectPipeline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error creating p2: %v", err)
 	}
-	if session.CurrentPipeline == nil || session.CurrentPipeline.Name != "p2" {
-		t.Fatalf("Expected CurrentPipeline to be 'p2' after creation, got %v", session.CurrentPipeline)
+	if session.GetCurrentPipeline() == nil || session.GetCurrentPipeline().Name != "p2" {
+		t.Fatalf("Expected CurrentPipeline to be 'p2' after creation, got %v", session.GetCurrentPipeline())
 	}
-	if session.CurrentTask != nil {
-		t.Fatalf("Expected CurrentTask to be nil after creating p2, got %v", session.CurrentTask)
+	if session.GetCurrentTask() != nil {
+		t.Fatalf("Expected CurrentTask to be nil after creating p2, got %v", session.GetCurrentTask())
 	}
 
 	// Set CurrentTask to t1 again (it should still exist) and CurrentPipeline to p1
-	session.CurrentTask = session.Tasks["t1"]
-	session.CurrentPipeline = session.Pipelines["p1"]
+	taskT1, ok := session.GetTasks()["t1"]
+	if !ok {
+		t.Fatal("Task t1 not found for resetting context")
+	}
+	session.SetCurrentTask(taskT1)
+
+	pipelineP1, ok := session.GetPipelines()["p1"]
+	if !ok {
+		t.Fatal("Pipeline p1 not found for resetting context")
+	}
+	session.SetCurrentPipeline(pipelineP1)
 
 	// Select pipeline p2
 	inputSelectP2 := "pipeline select p2"
@@ -291,11 +302,11 @@ func TestExecuteCommand_SelectPipeline(t *testing.T) {
 		t.Fatalf("Error selecting p2: %v", err)
 	}
 
-	if session.CurrentPipeline == nil || session.CurrentPipeline.Name != "p2" {
-		t.Errorf("Expected CurrentPipeline to be 'p2' after selection, got %v", session.CurrentPipeline)
+	if session.GetCurrentPipeline() == nil || session.GetCurrentPipeline().Name != "p2" {
+		t.Errorf("Expected CurrentPipeline to be 'p2' after selection, got %v", session.GetCurrentPipeline())
 	}
-	if session.CurrentTask != nil {
-		t.Errorf("Expected CurrentTask to be nil after selecting pipeline p2, got %v", session.CurrentTask)
+	if session.GetCurrentTask() != nil {
+		t.Errorf("Expected CurrentTask to be nil after selecting pipeline p2, got %v", session.GetCurrentTask())
 	}
 	selectedPipeline, ok := selectedObj.(*tektonv1.Pipeline)
 	if !ok || selectedPipeline.Name != "p2" {
@@ -535,68 +546,72 @@ func TestExecuteCommand_UndoResetCommands(t *testing.T) {
 
 	// 1. Undo empty stack
 	executeCmd("undo") // Should print "Nothing to undo."
-	if len(session.PastActions) != 0 {
-		t.Errorf("Expected PastActions to be empty after undo on empty stack, got %d", len(session.PastActions))
+	// For undo, PopRevertAction is on the interface, but PastActions itself is not.
+	// We'd need to expose a LenPastActions or similar if we want to test this here through the interface.
+	// For now, this test relies on the concrete *state.Session to check PastActions len.
+	concreteSessionForUndoTest := session // Assuming session is *state.Session here.
+	if len(concreteSessionForUndoTest.PastActions) != 0 {
+		t.Errorf("Expected PastActions to be empty after undo on empty stack, got %d", len(concreteSessionForUndoTest.PastActions))
 	}
 
 	// 2. Create pipeline, then undo
 	executeCmd("pipeline create p-undo")
-	if _, ok := session.Pipelines["p-undo"]; !ok {
+	if _, ok := session.GetPipelines()["p-undo"]; !ok {
 		t.Fatal("Pipeline p-undo not created")
 	}
-	if session.CurrentPipeline == nil || session.CurrentPipeline.Name != "p-undo" {
+	if session.GetCurrentPipeline() == nil || session.GetCurrentPipeline().Name != "p-undo" {
 		t.Fatal("CurrentPipeline not set to p-undo")
 	}
 	executeCmd("undo")
-	if _, ok := session.Pipelines["p-undo"]; ok {
+	if _, ok := session.GetPipelines()["p-undo"]; ok {
 		t.Error("Pipeline p-undo still exists after undo")
 	}
-	if session.CurrentPipeline != nil {
+	if session.GetCurrentPipeline() != nil {
 		t.Error("CurrentPipeline not reset after undoing its creation")
 	}
-	if len(session.PastActions) != 0 {
-		t.Errorf("Expected PastActions to be empty, got %d", len(session.PastActions))
+	if len(concreteSessionForUndoTest.PastActions) != 0 {
+		t.Errorf("Expected PastActions to be empty, got %d", len(concreteSessionForUndoTest.PastActions))
 	}
 
 	// 3. Create task, then undo
 	executeCmd("task create t-undo")
-	if _, ok := session.Tasks["t-undo"]; !ok {
+	if _, ok := session.GetTasks()["t-undo"]; !ok {
 		t.Fatal("Task t-undo not created")
 	}
-	if session.CurrentTask == nil || session.CurrentTask.Name != "t-undo" {
+	if session.GetCurrentTask() == nil || session.GetCurrentTask().Name != "t-undo" {
 		t.Fatal("CurrentTask not set to t-undo")
 	}
 	executeCmd("undo")
-	if _, ok := session.Tasks["t-undo"]; ok {
+	if _, ok := session.GetTasks()["t-undo"]; ok {
 		t.Error("Task t-undo still exists after undo")
 	}
-	if session.CurrentTask != nil {
+	if session.GetCurrentTask() != nil {
 		t.Error("CurrentTask not reset after undoing its creation")
 	}
 
 	// 4. Create task in pipeline, then undo
 	executeCmd("pipeline create p-for-task-undo")
 	executeCmd("task create t-in-p-undo") // This task is added to p-for-task-undo
-	pipelineForTaskUndo := session.Pipelines["p-for-task-undo"]
+	pipelineForTaskUndo := session.GetPipelines()["p-for-task-undo"]
 	if len(pipelineForTaskUndo.Spec.Tasks) != 1 || pipelineForTaskUndo.Spec.Tasks[0].Name != "t-in-p-undo" {
 		t.Fatalf("Task t-in-p-undo not added to pipeline p-for-task-undo, spec: %+v", pipelineForTaskUndo.Spec.Tasks)
 	}
 	executeCmd("undo") // Undo task create t-in-p-undo
-	if _, ok := session.Tasks["t-in-p-undo"]; ok {
+	if _, ok := session.GetTasks()["t-in-p-undo"]; ok {
 		t.Error("Task t-in-p-undo still exists after undo")
 	}
 	if len(pipelineForTaskUndo.Spec.Tasks) != 0 {
 		t.Errorf("Task t-in-p-undo not removed from pipeline p-for-task-undo spec after undo, got: %+v", pipelineForTaskUndo.Spec.Tasks)
 	}
 	executeCmd("undo") // Undo pipeline create p-for-task-undo
-	if _, ok := session.Pipelines["p-for-task-undo"]; ok {
+	if _, ok := session.GetPipelines()["p-for-task-undo"]; ok {
 		t.Error("Pipeline p-for-task-undo still exists after second undo")
 	}
 
 	// 5. Add step, then undo
 	executeCmd("task create task-for-step-undo")
 	executeCmd("step add step1 --image alpine")
-	taskForStepUndo := session.Tasks["task-for-step-undo"]
+	taskForStepUndo := session.GetTasks()["task-for-step-undo"]
 	if len(taskForStepUndo.Spec.Steps) != 1 {
 		t.Fatal("Step not added")
 	}
@@ -608,7 +623,7 @@ func TestExecuteCommand_UndoResetCommands(t *testing.T) {
 	// 6. Set new param, then undo
 	executeCmd("task create task-for-param-undo")
 	executeCmd("param newParam=val1")
-	taskForParamUndo := session.Tasks["task-for-param-undo"]
+	taskForParamUndo := session.GetTasks()["task-for-param-undo"]
 	if len(taskForParamUndo.Spec.Params) != 1 {
 		t.Fatal("New param not added")
 	}
@@ -621,13 +636,13 @@ func TestExecuteCommand_UndoResetCommands(t *testing.T) {
 	executeCmd("task create task-for-param-update-undo")
 	executeCmd("param existingParam=val1") // first set
 	// Ensure the task for param update is used for getting the original param
-	taskForParamUpdateUndoPreUpdate := session.Tasks["task-for-param-update-undo"]
+	taskForParamUpdateUndoPreUpdate := session.GetTasks()["task-for-param-update-undo"]
 	if taskForParamUpdateUndoPreUpdate == nil || len(taskForParamUpdateUndoPreUpdate.Spec.Params) == 0 {
 		t.Fatal("Task for param update or its param not found before update.")
 	}
 	originalParam := taskForParamUpdateUndoPreUpdate.Spec.Params[0].DeepCopy()
 	executeCmd("param existingParam=val2") // update
-	taskForParamUpdateUndo := session.Tasks["task-for-param-update-undo"]
+	taskForParamUpdateUndo := session.GetTasks()["task-for-param-update-undo"]
 	if taskForParamUpdateUndo == nil || len(taskForParamUpdateUndo.Spec.Params) == 0 || taskForParamUpdateUndo.Spec.Params[0].Default.StringVal != "val2" {
 		t.Fatal("Param not updated to val2")
 	}
@@ -639,14 +654,14 @@ func TestExecuteCommand_UndoResetCommands(t *testing.T) {
 	// 8. Reset session
 	executeCmd("pipeline create p-reset")
 	executeCmd("task create t-reset")
-	if len(session.PastActions) == 0 {
+	if len(concreteSessionForUndoTest.PastActions) == 0 {
 		t.Fatal("Expected PastActions to have items before reset")
 	}
 	executeCmd("reset")
-	if len(session.Pipelines) != 0 || len(session.Tasks) != 0 || session.CurrentPipeline != nil || session.CurrentTask != nil {
+	if len(session.GetPipelines()) != 0 || len(session.GetTasks()) != 0 || session.GetCurrentPipeline() != nil || session.GetCurrentTask() != nil {
 		t.Error("Session not empty after reset")
 	}
-	if len(session.PastActions) != 0 {
+	if len(concreteSessionForUndoTest.PastActions) != 0 {
 		t.Error("PastActions not cleared after reset")
 	}
 }
@@ -681,10 +696,10 @@ func TestExecuteCommand_Validate(t *testing.T) {
 	// To make it invalid, we could add a task with a name that is too long, or with invalid characters.
 	// The base `Task.Validate` checks metadata names using `validate.ObjectMetadata`.
 	invalidTaskName := strings.Repeat("a", 254) // Exceeds k8s name length limit
-	session.Tasks[invalidTaskName] = &tektonv1.Task{
+	session.AddTask(invalidTaskName, &tektonv1.Task{
 		ObjectMeta: metav1.ObjectMeta{Name: invalidTaskName},
 		Spec:       tektonv1.TaskSpec{Steps: []tektonv1.Step{{Name: "s1", Image: "img"}}},
-	}
+	})
 
 	_, err = engine.ExecuteCommand(parsedLine.Cmds[0].Pos, parsedLine.Cmds[0].Cmd, session, nil, nil)
 	if err == nil {
@@ -695,46 +710,46 @@ func TestExecuteCommand_Validate(t *testing.T) {
 		}
 		t.Logf("Got expected validation error: %v", err) // Log error for visibility
 	}
-	delete(session.Tasks, invalidTaskName) // cleanup
+	session.DeleteTask(invalidTaskName) // cleanup
 
 	// Test validation is called before export all
 	exportCmd, _ := parser.ParseLine("export all")
-	session.Tasks[invalidTaskName] = &tektonv1.Task{
+	session.AddTask(invalidTaskName, &tektonv1.Task{
 		ObjectMeta: metav1.ObjectMeta{Name: invalidTaskName},
 		Spec:       tektonv1.TaskSpec{Steps: []tektonv1.Step{{Name: "s1", Image: "img"}}},
-	}
+	})
 	_, err = engine.ExecuteCommand(exportCmd.Cmds[0].Pos, exportCmd.Cmds[0].Cmd, session, nil, nil)
 	if err == nil {
 		t.Errorf("Expected 'export all' to fail validation, but it passed")
 	} else if !strings.Contains(err.Error(), "validation failed before export") {
 		t.Errorf("Expected error message for 'export all' to indicate pre-export validation failure, got: %v", err)
 	}
-	delete(session.Tasks, invalidTaskName) // cleanup
+	session.DeleteTask(invalidTaskName) // cleanup
 
 	// Test validation is called before apply all
 	applyCmd, _ := parser.ParseLine("apply all ns")
-	session.Tasks[invalidTaskName] = &tektonv1.Task{
+	session.AddTask(invalidTaskName, &tektonv1.Task{
 		ObjectMeta: metav1.ObjectMeta{Name: invalidTaskName},
 		Spec:       tektonv1.TaskSpec{Steps: []tektonv1.Step{{Name: "s1", Image: "img"}}},
-	}
+	})
 	_, err = engine.ExecuteCommand(applyCmd.Cmds[0].Pos, applyCmd.Cmds[0].Cmd, session, nil, nil)
 	if err == nil {
 		t.Errorf("Expected 'apply all' to fail validation, but it passed")
 	} else if !strings.Contains(err.Error(), "validation failed before apply") {
 		t.Errorf("Expected error message for 'apply all' to indicate pre-apply validation failure, got: %v", err)
 	}
-	delete(session.Tasks, invalidTaskName) // cleanup
+	session.DeleteTask(invalidTaskName) // cleanup
 }
 
 func TestExecuteCommand_ExportAll_Successful(t *testing.T) {
 	session := state.NewSession()
 	p := &tektonv1.Pipeline{ObjectMeta: metav1.ObjectMeta{Name: "p1"}, Spec: tektonv1.PipelineSpec{Description: "d1"}}
-	session.Pipelines["p1"] = p
+	session.AddPipeline("p1", p)
 
 	exportCmdLine, _ := parser.ParseLine("export all")
-	cmd := exportCmdLine.Cmds[0].Cmd
+	cmdToExec := exportCmdLine.Cmds[0].Cmd
 
-	result, err := engine.ExecuteCommand(exportCmdLine.Cmds[0].Pos, cmd, session, nil, nil)
+	result, err := engine.ExecuteCommand(exportCmdLine.Cmds[0].Pos, cmdToExec, session, nil, nil)
 	if err != nil {
 		t.Fatalf("ExecuteCommand('export all') failed: %v", err)
 	}
@@ -750,5 +765,434 @@ func TestExecuteCommand_ExportAll_Successful(t *testing.T) {
 	}
 	if !strings.Contains(yamlString, "description: d1") {
 		t.Errorf("Expected YAML to contain 'description: d1', got: %s", yamlString)
+	}
+}
+
+// mockSessionForRun is a simplified mock of state.Session for testing run commands.
+// It only implements the methods and fields relevant to the run command logic.
+type mockSessionForRun struct {
+	*state.Session                 // Embed original session for non-mocked parts if needed
+	RunPipelineCalledWith struct { // To store arguments passed to RunPipeline
+		Ctx          context.Context
+		PipelineName string
+		Params       []tektonv1.Param
+		Namespace    string
+	}
+	RunPipelineError error // To simulate errors from RunPipeline
+
+	RunTaskCalledWith struct {
+		Ctx       context.Context
+		TaskName  string
+		Params    []tektonv1.Param
+		Namespace string
+	}
+	RunTaskError error
+}
+
+// Ensure mockSessionForRun implements CommandExecutorSession
+var _ engine.CommandExecutorSession = (*mockSessionForRun)(nil)
+
+// GetPipelines implements engine.CommandExecutorSession
+func (m *mockSessionForRun) GetPipelines() map[string]*tektonv1.Pipeline {
+	if m.Session == nil { // Ensure Session is initialized
+		m.Session = state.NewSession()
+	}
+	return m.Session.GetPipelines()
+}
+
+// SetCurrentPipeline implements engine.CommandExecutorSession
+func (m *mockSessionForRun) SetCurrentPipeline(p *tektonv1.Pipeline) {
+	if m.Session == nil {
+		m.Session = state.NewSession()
+	}
+	m.Session.SetCurrentPipeline(p)
+}
+
+// GetCurrentPipeline implements engine.CommandExecutorSession
+func (m *mockSessionForRun) GetCurrentPipeline() *tektonv1.Pipeline {
+	if m.Session == nil {
+		return nil
+	}
+	return m.Session.GetCurrentPipeline()
+}
+
+// AddPipeline implements engine.CommandExecutorSession
+func (m *mockSessionForRun) AddPipeline(name string, p *tektonv1.Pipeline) {
+	if m.Session == nil {
+		m.Session = state.NewSession()
+	}
+	m.Session.AddPipeline(name, p)
+}
+
+// DeletePipeline implements engine.CommandExecutorSession
+func (m *mockSessionForRun) DeletePipeline(name string) {
+	if m.Session == nil {
+		return
+	}
+	m.Session.DeletePipeline(name)
+}
+
+// GetTasks implements engine.CommandExecutorSession
+func (m *mockSessionForRun) GetTasks() map[string]*tektonv1.Task {
+	if m.Session == nil {
+		m.Session = state.NewSession()
+	}
+	return m.Session.GetTasks()
+}
+
+// SetCurrentTask implements engine.CommandExecutorSession
+func (m *mockSessionForRun) SetCurrentTask(t *tektonv1.Task) {
+	if m.Session == nil {
+		m.Session = state.NewSession()
+	}
+	m.Session.SetCurrentTask(t)
+}
+
+// GetCurrentTask implements engine.CommandExecutorSession
+func (m *mockSessionForRun) GetCurrentTask() *tektonv1.Task {
+	if m.Session == nil {
+		return nil
+	}
+	return m.Session.GetCurrentTask()
+}
+
+// AddTask implements engine.CommandExecutorSession
+func (m *mockSessionForRun) AddTask(name string, t *tektonv1.Task) {
+	if m.Session == nil {
+		m.Session = state.NewSession()
+	}
+	m.Session.AddTask(name, t)
+}
+
+// DeleteTask implements engine.CommandExecutorSession
+func (m *mockSessionForRun) DeleteTask(name string) {
+	if m.Session == nil {
+		return
+	}
+	m.Session.DeleteTask(name)
+}
+
+// PushRevertAction implements engine.CommandExecutorSession
+func (m *mockSessionForRun) PushRevertAction(revert state.RevertFunc) {
+	if m.Session == nil {
+		m.Session = state.NewSession()
+	}
+	m.Session.PushRevertAction(revert)
+}
+
+// PopRevertAction implements engine.CommandExecutorSession
+func (m *mockSessionForRun) PopRevertAction() state.RevertFunc {
+	if m.Session == nil {
+		return nil
+	}
+	return m.Session.PopRevertAction()
+}
+
+// Reset implements engine.CommandExecutorSession
+func (m *mockSessionForRun) Reset() {
+	if m.Session == nil {
+		m.Session = state.NewSession() // Or handle error if Reset is called on nil embedded session
+	} else {
+		m.Session.Reset()
+	}
+	// Reset mock-specific fields if any
+	m.RunPipelineCalledWith = struct {
+		Ctx          context.Context
+		PipelineName string
+		Params       []tektonv1.Param
+		Namespace    string
+	}{}
+	m.RunPipelineError = nil
+	m.RunTaskCalledWith = struct {
+		Ctx       context.Context
+		TaskName  string
+		Params    []tektonv1.Param
+		Namespace string
+	}{}
+	m.RunTaskError = nil
+}
+
+// RunPipeline is the mock implementation.
+func (m *mockSessionForRun) RunPipeline(ctx context.Context, pipelineName string, params []tektonv1.Param, namespace string) (*tektonv1.PipelineRun, error) {
+	m.RunPipelineCalledWith.Ctx = ctx
+	m.RunPipelineCalledWith.PipelineName = pipelineName
+	m.RunPipelineCalledWith.Params = params
+	m.RunPipelineCalledWith.Namespace = namespace
+	if m.RunPipelineError != nil {
+		return nil, m.RunPipelineError
+	}
+	// Return a dummy PipelineRun, actual content doesn't matter much for this engine test
+	return &tektonv1.PipelineRun{ObjectMeta: metav1.ObjectMeta{Name: pipelineName + "-run-dummy"}}, nil
+}
+
+// RunTask is the mock implementation.
+func (m *mockSessionForRun) RunTask(ctx context.Context, taskName string, params []tektonv1.Param, namespace string) (*tektonv1.TaskRun, error) {
+	m.RunTaskCalledWith.Ctx = ctx
+	m.RunTaskCalledWith.TaskName = taskName
+	m.RunTaskCalledWith.Params = params
+	m.RunTaskCalledWith.Namespace = namespace
+	if m.RunTaskError != nil {
+		return nil, m.RunTaskError
+	}
+	return &tektonv1.TaskRun{ObjectMeta: metav1.ObjectMeta{Name: taskName + "-run-dummy"}}, nil
+}
+
+func TestExecuteCommand_PipelineRun(t *testing.T) {
+	tests := []struct {
+		name                 string
+		inputLine            string
+		setupSession         func(*mockSessionForRun) // To setup initial state, like existing pipelines
+		wantError            bool
+		wantErrorMsgContains string
+		wantPipelineName     string
+		wantParams           []tektonv1.Param
+		wantNamespace        string
+	}{
+		{
+			name:      "run pipeline basic",
+			inputLine: "pipeline run my-pipeline",
+			setupSession: func(ms *mockSessionForRun) {
+				ms.AddPipeline("my-pipeline", &tektonv1.Pipeline{ObjectMeta: metav1.ObjectMeta{Name: "my-pipeline"}})
+			},
+			wantPipelineName: "my-pipeline",
+			wantNamespace:    "default",
+			wantParams:       nil,
+		},
+		{
+			name:      "run pipeline with namespace",
+			inputLine: "pipeline run my-pipeline namespace custom-ns",
+			setupSession: func(ms *mockSessionForRun) {
+				ms.AddPipeline("my-pipeline", &tektonv1.Pipeline{ObjectMeta: metav1.ObjectMeta{Name: "my-pipeline"}})
+			},
+			wantPipelineName: "my-pipeline",
+			wantNamespace:    "custom-ns",
+			wantParams:       nil,
+		},
+		{
+			name:      "run pipeline with single param",
+			inputLine: `pipeline run my-pipeline param image="nginx:latest"`,
+			setupSession: func(ms *mockSessionForRun) {
+				ms.AddPipeline("my-pipeline", &tektonv1.Pipeline{ObjectMeta: metav1.ObjectMeta{Name: "my-pipeline"}})
+			},
+			wantPipelineName: "my-pipeline",
+			wantNamespace:    "default",
+			wantParams:       []tektonv1.Param{{Name: "image", Value: tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: "nginx:latest"}}},
+		},
+		{
+			name:      "run pipeline with multiple params and namespace",
+			inputLine: `pipeline run my-pipeline param imageTag="v1.0" namespace prod param replicas=3`,
+			setupSession: func(ms *mockSessionForRun) {
+				ms.AddPipeline("my-pipeline", &tektonv1.Pipeline{ObjectMeta: metav1.ObjectMeta{Name: "my-pipeline"}})
+			},
+			wantPipelineName: "my-pipeline",
+			wantNamespace:    "prod",
+			wantParams: []tektonv1.Param{
+				{Name: "imageTag", Value: tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: "v1.0"}},
+				{Name: "replicas", Value: tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: "3"}},
+			},
+		},
+		{
+			name:                 "run pipeline not found",
+			inputLine:            "pipeline run non-existent-pipeline",
+			setupSession:         func(ms *mockSessionForRun) { /* no pipeline setup */ },
+			wantError:            true,
+			wantErrorMsgContains: "pipeline 'non-existent-pipeline' not found",
+		},
+		{
+			name:      "run pipeline with invalid param format",
+			inputLine: "pipeline run my-pipeline param image", // Missing =value
+			setupSession: func(ms *mockSessionForRun) {
+				ms.AddPipeline("my-pipeline", &tektonv1.Pipeline{ObjectMeta: metav1.ObjectMeta{Name: "my-pipeline"}})
+			},
+			wantError:            true,
+			wantErrorMsgContains: "invalid param format",
+		},
+		{
+			name:      "run pipeline error from session",
+			inputLine: "pipeline run my-pipeline",
+			setupSession: func(ms *mockSessionForRun) {
+				ms.AddPipeline("my-pipeline", &tektonv1.Pipeline{ObjectMeta: metav1.ObjectMeta{Name: "my-pipeline"}})
+				ms.RunPipelineError = fmt.Errorf("kube API error")
+			},
+			wantError:            true,
+			wantErrorMsgContains: "kube API error",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mockSess := &mockSessionForRun{
+				Session: state.NewSession(), // Initialize embedded session for Pipelines map
+			}
+			if tt.setupSession != nil {
+				tt.setupSession(mockSess)
+			}
+
+			parsedLine, err := parser.ParseLine(tt.inputLine)
+			if err != nil {
+				t.Fatalf("ParseLine(%q) error = %v", tt.inputLine, err)
+			}
+			if len(parsedLine.Cmds) == 0 || parsedLine.Cmds[0].Cmd == nil {
+				t.Fatalf("ParseLine(%q) did not produce a valid command", tt.inputLine)
+			}
+			cmdToExecute := parsedLine.Cmds[0].Cmd
+
+			// Execute the command with the mock session
+			_, execErr := engine.ExecuteCommand(cmdToExecute.Pos, cmdToExecute, mockSess, nil, nil)
+
+			// Assertions
+			if tt.wantError {
+				if execErr == nil {
+					t.Errorf("ExecuteCommand() expected error, got nil")
+				} else if tt.wantErrorMsgContains != "" && !strings.Contains(execErr.Error(), tt.wantErrorMsgContains) {
+					t.Errorf("ExecuteCommand() error = %v, wantErr %s", execErr, tt.wantErrorMsgContains)
+				}
+			} else {
+				if execErr != nil {
+					t.Errorf("ExecuteCommand() unexpected error = %v", execErr)
+				}
+				if !tt.wantError { // Only check call details if no error was expected
+					if mockSess.RunPipelineCalledWith.PipelineName != tt.wantPipelineName {
+						t.Errorf("RunPipeline called with PipelineName = %s; want %s", mockSess.RunPipelineCalledWith.PipelineName, tt.wantPipelineName)
+					}
+					if mockSess.RunPipelineCalledWith.Namespace != tt.wantNamespace {
+						t.Errorf("RunPipeline called with Namespace = %s; want %s", mockSess.RunPipelineCalledWith.Namespace, tt.wantNamespace)
+					}
+					if !reflect.DeepEqual(mockSess.RunPipelineCalledWith.Params, tt.wantParams) {
+						t.Errorf("RunPipeline called with Params = %v; want %v", mockSess.RunPipelineCalledWith.Params, tt.wantParams)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestExecuteCommand_TaskRun(t *testing.T) {
+	tests := []struct {
+		name                 string
+		inputLine            string
+		setupSession         func(*mockSessionForRun)
+		wantError            bool
+		wantErrorMsgContains string
+		wantTaskName         string
+		wantParams           []tektonv1.Param
+		wantNamespace        string
+	}{
+		{
+			name:      "run task basic",
+			inputLine: "task run my-task",
+			setupSession: func(ms *mockSessionForRun) {
+				ms.AddTask("my-task", &tektonv1.Task{ObjectMeta: metav1.ObjectMeta{Name: "my-task"}})
+			},
+			wantTaskName:  "my-task",
+			wantNamespace: "default",
+			wantParams:    nil,
+		},
+		{
+			name:      "run task with namespace",
+			inputLine: "task run my-task namespace custom-ns",
+			setupSession: func(ms *mockSessionForRun) {
+				ms.AddTask("my-task", &tektonv1.Task{ObjectMeta: metav1.ObjectMeta{Name: "my-task"}})
+			},
+			wantTaskName:  "my-task",
+			wantNamespace: "custom-ns",
+			wantParams:    nil,
+		},
+		{
+			name:      "run task with single param",
+			inputLine: `task run my-task param image="nginx:latest"`,
+			setupSession: func(ms *mockSessionForRun) {
+				ms.AddTask("my-task", &tektonv1.Task{ObjectMeta: metav1.ObjectMeta{Name: "my-task"}})
+			},
+			wantTaskName:  "my-task",
+			wantNamespace: "default",
+			wantParams:    []tektonv1.Param{{Name: "image", Value: tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: "nginx:latest"}}},
+		},
+		{
+			name:      "run task with multiple params and namespace",
+			inputLine: `task run my-task param imageTag="v1.0" namespace prod param replicas=3`,
+			setupSession: func(ms *mockSessionForRun) {
+				ms.AddTask("my-task", &tektonv1.Task{ObjectMeta: metav1.ObjectMeta{Name: "my-task"}})
+			},
+			wantTaskName:  "my-task",
+			wantNamespace: "prod",
+			wantParams: []tektonv1.Param{
+				{Name: "imageTag", Value: tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: "v1.0"}},
+				{Name: "replicas", Value: tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: "3"}},
+			},
+		},
+		{
+			name:                 "run task not found",
+			inputLine:            "task run non-existent-task",
+			setupSession:         func(ms *mockSessionForRun) { /* no task setup */ },
+			wantError:            true,
+			wantErrorMsgContains: "task 'non-existent-task' not found",
+		},
+		{
+			name:      "run task with invalid param format",
+			inputLine: "task run my-task param image", // Missing =value
+			setupSession: func(ms *mockSessionForRun) {
+				ms.AddTask("my-task", &tektonv1.Task{ObjectMeta: metav1.ObjectMeta{Name: "my-task"}})
+			},
+			wantError:            true,
+			wantErrorMsgContains: "invalid param format",
+		},
+		{
+			name:      "run task error from session",
+			inputLine: "task run my-task",
+			setupSession: func(ms *mockSessionForRun) {
+				ms.AddTask("my-task", &tektonv1.Task{ObjectMeta: metav1.ObjectMeta{Name: "my-task"}})
+				ms.RunTaskError = fmt.Errorf("kube API error for task")
+			},
+			wantError:            true,
+			wantErrorMsgContains: "kube API error for task",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mockSess := &mockSessionForRun{
+				Session: state.NewSession(),
+			}
+			if tt.setupSession != nil {
+				tt.setupSession(mockSess)
+			}
+
+			parsedLine, err := parser.ParseLine(tt.inputLine)
+			if err != nil {
+				t.Fatalf("ParseLine(%q) error = %v", tt.inputLine, err)
+			}
+			if len(parsedLine.Cmds) == 0 || parsedLine.Cmds[0].Cmd == nil {
+				t.Fatalf("ParseLine(%q) did not produce a valid command", tt.inputLine)
+			}
+			cmdToExecute := parsedLine.Cmds[0].Cmd
+
+			// Execute the command with the mock session
+			_, execErr := engine.ExecuteCommand(cmdToExecute.Pos, cmdToExecute, mockSess, nil, nil)
+
+			// Assertions
+			if tt.wantError {
+				if execErr == nil {
+					t.Errorf("ExecuteCommand() expected error, got nil")
+				} else if tt.wantErrorMsgContains != "" && !strings.Contains(execErr.Error(), tt.wantErrorMsgContains) {
+					t.Errorf("ExecuteCommand() error = %v, wantErr %s", execErr, tt.wantErrorMsgContains)
+				}
+			} else {
+				if execErr != nil {
+					t.Errorf("ExecuteCommand() unexpected error = %v", execErr)
+				}
+				if !tt.wantError { // Only check call details if no error was expected
+					if mockSess.RunTaskCalledWith.TaskName != tt.wantTaskName {
+						t.Errorf("RunTask called with TaskName = %s; want %s", mockSess.RunTaskCalledWith.TaskName, tt.wantTaskName)
+					}
+					if mockSess.RunTaskCalledWith.Namespace != tt.wantNamespace {
+						t.Errorf("RunTask called with Namespace = %s; want %s", mockSess.RunTaskCalledWith.Namespace, tt.wantNamespace)
+					}
+					if !reflect.DeepEqual(mockSess.RunTaskCalledWith.Params, tt.wantParams) {
+						t.Errorf("RunTask called with Params = %v; want %v", mockSess.RunTaskCalledWith.Params, tt.wantParams)
+					}
+				}
+			}
+		})
 	}
 }

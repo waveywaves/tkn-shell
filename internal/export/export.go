@@ -1,6 +1,7 @@
 package export
 
 import (
+	"sort"
 	"tkn-shell/internal/state"
 
 	tektonv1 "github.com/tektoncd/pipeline/pkg/apis/pipeline/v1" // Added for SchemeGroupVersion
@@ -13,7 +14,15 @@ func ExportAll(s *state.Session) ([]byte, error) {
 	var yamlDocs [][]byte // Changed from []string
 
 	// Export Tasks
-	for _, task := range s.Tasks {
+	tasks := make([]*tektonv1.Task, 0, len(s.GetTasks()))
+	for _, task := range s.GetTasks() {
+		tasks = append(tasks, task)
+	}
+	sort.Slice(tasks, func(i, j int) bool {
+		return tasks[i].Name < tasks[j].Name
+	})
+
+	for _, task := range tasks {
 		taskToExport := task.DeepCopy() // Work with a copy
 		taskToExport.APIVersion = tektonv1.SchemeGroupVersion.String()
 		taskToExport.Kind = "Task"
@@ -26,7 +35,15 @@ func ExportAll(s *state.Session) ([]byte, error) {
 	}
 
 	// Export Pipelines
-	for _, pipeline := range s.Pipelines {
+	pipelines := make([]*tektonv1.Pipeline, 0, len(s.GetPipelines()))
+	for _, pipeline := range s.GetPipelines() {
+		pipelines = append(pipelines, pipeline)
+	}
+	sort.Slice(pipelines, func(i, j int) bool {
+		return pipelines[i].Name < pipelines[j].Name
+	})
+
+	for _, pipeline := range pipelines {
 		pipelineToExport := pipeline.DeepCopy() // Work with a copy
 		pipelineToExport.APIVersion = tektonv1.SchemeGroupVersion.String()
 		pipelineToExport.Kind = "Pipeline"

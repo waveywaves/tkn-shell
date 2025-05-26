@@ -16,7 +16,7 @@ func ValidateSession(s *state.Session) error {
 	// feedback.Infof("DEBUG: Validating session...")
 
 	// Validate Pipelines
-	for name, p := range s.Pipelines {
+	for name, p := range s.GetPipelines() {
 		// feedback.Infof("DEBUG: Validating Pipeline: %s", name)
 		if p == nil {
 			// feedback.Infof("DEBUG: Pipeline '%s' is nil in session", name)
@@ -30,7 +30,7 @@ func ValidateSession(s *state.Session) error {
 	}
 
 	// Validate Tasks
-	for name, tk := range s.Tasks {
+	for name, tk := range s.GetTasks() {
 		// feedback.Infof("DEBUG: Validating Task: %s", name)
 		if tk == nil {
 			// feedback.Infof("DEBUG: Task '%s' is nil in session", name)
